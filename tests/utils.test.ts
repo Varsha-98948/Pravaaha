@@ -8,5 +8,5 @@ describe('engine', () => {
   it('never exceeds capacity', () => originalPlan.routes.forEach(r => expect(r.load).toBeLessThanOrEqual(vehicles.find(v => v.id === r.vehicleId)!.capacity)))
   it('accounts for every delivery', () => expect(originalPlan.routes.flatMap(r => r.stops).length + originalPlan.unassigned.length).toBe(deliveries.length))
   it('compares', () => { const c = comparePlans(originalPlan, revisedPlan); expect(c.counts.kept + c.counts.moved + c.counts.broken).toBeGreaterThan(0); expect(matrix.depot.depot).toBe(0) })
-  it('replan throws until implemented', () => expect(() => replan({ vehicles, deliveries, matrix }, originalPlan, 0)).toThrow())
+  it('replan produces a valid plan', () => { const p = replan({ vehicles, deliveries, matrix }, originalPlan, 0); expect(p.routes.length).toBeGreaterThan(0) })
 })
