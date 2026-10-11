@@ -43,6 +43,7 @@ describe('overview data loading and metrics', () => {
     const data = await loadDashboardData('org-7')
     expect(getVehicles).toHaveBeenCalledWith('org-7')
     expect(getDeliveries).toHaveBeenCalledWith('org-7')
+    expect(getLocations).toHaveBeenCalledWith('org-7')
     expect(listDeliveryPlans).toHaveBeenCalledWith('org-7')
     expect(getDeliveryPlan).toHaveBeenCalledWith('new', 'org-7')
     expect(data.metrics).toEqual({ activeVehicles: 1, deliveries: 1, scheduledStops: 1, unassigned: 0, lateStops: 1 })
@@ -57,10 +58,11 @@ describe('overview data loading and metrics', () => {
   it('keeps empty live results empty and reports zero counts without inventing a plan', async () => {
     getVehicles.mockResolvedValue([])
     getDeliveries.mockResolvedValue([])
+    getLocations.mockResolvedValue([])
     listDeliveryPlans.mockResolvedValue([])
     const data = await loadDashboardData('org-empty')
     expect(data).toEqual({
-      vehicles: [], deliveries: [], latestPlan: null,
+      vehicles: [], deliveries: [], locations: [], latestPlan: null,
       metrics: { activeVehicles: 0, deliveries: 0, scheduledStops: null, unassigned: null, lateStops: null },
     })
     expect(getDeliveryPlan).not.toHaveBeenCalled()

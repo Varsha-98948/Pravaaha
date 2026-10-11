@@ -21,7 +21,7 @@ import {
 import { getSupabaseClient, isDemoMode } from './supabase'
 import { requireRole } from './authService'
 import { validateDisruptionEvent, validateInterpretedDisruption } from './validation'
-import type { DisruptionInterpreter } from './disruptionInterpreter'
+import type { DisruptionInterpreter, InterpreterContext } from './disruptionInterpreter'
 import type { AuditRecord } from './mappers'
 
 export interface ConfirmDisruptionResult {
@@ -39,7 +39,8 @@ export async function interpretIncidentPreview(
   rawText: string,
   interpreter: DisruptionInterpreter,
   knownLocationIds: string[],
-  knownVehicleIds: string[]
+  knownVehicleIds: string[],
+  context?: InterpreterContext
 ): Promise<InterpretedDisruption> {
   if (typeof rawText !== 'string' || rawText.trim() === '') {
     return {
@@ -53,8 +54,13 @@ export async function interpretIncidentPreview(
     }
   }
 
+  const effectiveContext: InterpreterContext = {
+    knownVehicles: knownVehicleIds,
+    ...context,
+  }
+
   // Run interpreter
-  const rawInterpretation = await interpreter.interpret(rawText, knownLocationIds)
+  const rawInterpretation = await interpreter.interpret(rawText, knownLocationIds, effectiveContext)
 
   // Validate output against contracts and known references
   const validated = validateInterpretedDisruption(rawInterpretation, knownLocationIds, knownVehicleIds)

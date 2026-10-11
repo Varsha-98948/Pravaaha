@@ -12,6 +12,7 @@ export interface DashboardMetrics {
 export interface DashboardData {
   vehicles: Vehicle[]
   deliveries: Delivery[]
+  locations: Location[]
   latestPlan: DeliveryPlan | null
   metrics: DashboardMetrics
 }
@@ -36,13 +37,14 @@ export function dashboardMetrics(vehicles: Vehicle[], deliveries: Delivery[], pl
 }
 
 export async function loadDashboardData(orgId: string): Promise<DashboardData> {
-  const [vehicles, deliveries, plans] = await Promise.all([
+  const [vehicles, deliveries, locations, plans] = await Promise.all([
     getVehicles(orgId),
     getDeliveries(orgId),
+    getLocations(orgId),
     listDeliveryPlans(orgId),
   ])
   const latestPlan = plans[0] ? await getDeliveryPlan(plans[0].id, orgId) : null
-  return { vehicles, deliveries, latestPlan, metrics: dashboardMetrics(vehicles, deliveries, latestPlan) }
+  return { vehicles, deliveries, locations, latestPlan, metrics: dashboardMetrics(vehicles, deliveries, latestPlan) }
 }
 
 export async function loadPlanComparisonData(orgId: string): Promise<PlanComparisonData | null> {

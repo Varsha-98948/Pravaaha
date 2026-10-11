@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { Badge, Card, PageHead, State, Table } from '../components/ui'
+import { Badge, Card, PageHead, State, Table, MetricCard } from '../components/ui'
 import { getDeliveries, getLocations, saveDelivery } from '../services/persistenceService'
 import { isDemoMode } from '../services/supabase'
 import type { Delivery, Location, UserProfile } from '../types'
@@ -120,6 +120,11 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
 
     {formError && <State kind="error" text={formError} />}
     {success && <State kind="success" text={success} />}
+    {!loading && !error && deliveries && <div className="mb-4 grid gap-3 sm:grid-cols-3">
+      <MetricCard label="Deliveries" value={deliveries.length} sub="Loaded from this organization" />
+      <MetricCard label="Urgent" value={deliveries.filter(delivery => delivery.priority === 'urgent').length} sub="Persisted priority" />
+      <MetricCard label="Customer locations" value={locations.filter(location => location.kind === 'customer').length} sub="Organization locations" />
+    </div>}
     {isDemoMode
       ? <Card title="Demo mode"><State kind="empty" text="Sample deliveries are read only. Connect an authenticated Supabase organization to create deliveries." /></Card>
       : canWrite && <Card title="Create delivery" action={<span className="text-xs text-slate-500">Organization: {profile?.name}</span>}>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Card, PageHead, Badge, State, Table } from '../components/ui'
+import { Card, PageHead, Badge, State, Table, MetricCard } from '../components/ui'
 import { comparePlans } from '../engine/compare'
 import { loadPlanComparisonData, type PlanComparisonData } from '../services/overviewService'
 import { isDemoMode } from '../services/supabase'
@@ -67,7 +67,7 @@ export default function Compare({ profile = null }: { profile?: UserProfile | nu
         : !data ? <State kind="empty" text={isDemoMode ? 'Plan comparison is unavailable.' : 'At least two saved plans are required before they can be compared.'} />
           : comparison ? <>
             <div className="mb-4 flex flex-wrap gap-3">
-              {(['kept', 'moved', 'broken'] as const).map(key => <Card key={key}><div className="text-2xl font-semibold">{comparison.counts[key]}</div><div className="text-sm text-slate-500">{key}</div></Card>)}
+              {(['kept', 'moved', 'broken'] as const).map(key => <MetricCard key={key} label={key} value={comparison.counts[key]} sub="Saved plan comparison" />)}
             </div>
             <Card>
               <div className="mb-3 text-sm text-slate-600">{data.originalPlan.label} → {data.revisedPlan.label}</div>

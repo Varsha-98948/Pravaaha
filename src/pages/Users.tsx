@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Badge, Card, PageHead, State, Table } from '../components/ui'
+import { Badge, Card, PageHead, State, Table, MetricCard } from '../components/ui'
 import { canAdministerRoles } from '../services/authService'
 import { getProfiles, updateUserProfile } from '../services/persistenceService'
 import { isDemoMode } from '../services/supabase'
@@ -99,6 +99,9 @@ export default function Users({ profile = null }: { profile?: UserProfile | null
           : profiles === null ? <State kind="error" text="Profile data is unavailable. Refresh to try again." />
             : profiles.length === 0 ? <State kind="empty" text="No user profiles are registered for this organization." />
               : <>
+                <div className="mb-4 grid gap-3 sm:grid-cols-3">
+                  {roles.map(role => <MetricCard key={role} label={role} value={profiles.filter(user => user.role === role).length} sub="Organization profiles" />)}
+                </div>
                 {error && <State kind="error" text={error} />}
                 {success && <State kind="success" text={success} />}
                 {!isDemoMode && <Table head={['Name', 'Email', 'Role', 'Administration']} rows={rows} />}

@@ -8,6 +8,8 @@ import { isDemoMode } from '../services/supabase'
 import { validateDisruptionEvent } from '../services/validation'
 import { travelMatrixFromPersistedPlan } from '../services/replanningService'
 import { ValidationError } from '../services/errors'
+import { defaultDisruptionInterpreter } from '../services/disruptionInterpreter'
+import { interpretIncidentPreview } from '../services/disruptionService'
 import { fmtTime } from '../utils/time'
 import type { DeliveryPlan, DisruptionEvent, InterpretedDisruption, Location, UserProfile, Vehicle } from '../types'
 
@@ -62,6 +64,7 @@ export default function Disruptions({
   const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [interpreting, setInterpreting] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [kind, setKind] = useState<EventKind>('vehicle_failure')
   const [at, setAt] = useState('0')
@@ -213,6 +216,38 @@ export default function Disruptions({
         : `Urgent delivery of ${validatedEvent.delivery.size} units at ${locName(validatedEvent.delivery.locationId)} at ${fmtTime(validatedEvent.at)}.`
 
     setRes({ rawText: text.trim(), event: validatedEvent, missing: [], unknownLocations: [], preview, confirmation: 'pending', source: 'placeholder' })
+  }
+
+  const prepareWithAi = async () => {
+    setErr('')
+    setSuccess('')
+    if (!text.trim()) {
+      setErr('Enter a short incident description before preparing the disruption.')
+      return
+    }
+    if (isDemoMode) {
+      setErr('AI interpretation is available only through the configured backend in live mode. Use a demo scenario instead.')
+      return
+    }
+    if (!profile?.orgId) {
+      setErr('Your organization profile is unavailable. Sign in again before interpreting an incident.')
+      return
+    }
+    setInterpreting(true)
+    try {
+      const interpreted = await interpretIncidentPreview(
+        text.trim(), defaultDisruptionInterpreter,
+        locations.map(location => location.id), vehicles.map(vehicle => vehicle.id),
+        { locations, knownVehicles: vehicles, currentTime: currentPlan?.createdAt ?? 0 },
+      )
+      setRes(interpreted)
+      if (!interpreted.event) setErr(interpreted.error || interpreted.missing.join(' ') || 'The incident could not be interpreted. Correct the details and try again.')
+    } catch (cause) {
+      setRes(null)
+      setErr((cause as Error).message || 'Unable to interpret this incident.')
+    } finally {
+      setInterpreting(false)
+    }
   }
 
   const confirm = async () => {
@@ -367,13 +402,16 @@ export default function Disruptions({
 
           <textarea value={text} onChange={event => setText(event.target.value)} rows={3} placeholder="Describe what happened" className="w-full rounded border border-slate-300 p-2 text-sm" />
           <div className="mt-2 flex gap-2">
-            <button onClick={prepare} disabled={!text.trim() || loading || submitting || !canWrite} className="rounded bg-teal px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">Prepare disruption</button>
+            {!isDemoMode && <button onClick={() => void prepareWithAi()} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded bg-[#243607] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{interpreting ? 'Interpreting…' : 'Interpret with AI'}</button>}
+            <button onClick={prepare} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-40">Prepare structured event</button>
           </div>
 
           {res && <div className="mt-4 rounded border border-slate-200 bg-slate-50/50 p-4 text-sm">
             <div className="flex items-center gap-2"><Badge t="warn">{res.source}</Badge><span className="font-medium text-slate-800">{res.preview}</span></div>
             {res.event && <div className="mt-2 text-xs text-slate-600"><span className="font-semibold">Event Type:</span> {res.event.type} · <span className="font-semibold">Effective Time:</span> {fmtTime(res.event.at)} ({res.event.at}m)</div>}
             {res.missing.length > 0 && <div className="mt-1 text-xs text-amber-700">Missing: {res.missing.join(', ')}</div>}
+            {res.unknownLocations?.length ? <div className="mt-1 text-xs text-red-700">Unknown organization locations: {res.unknownLocations.join(', ')}. Select or correct known locations before confirming.</div> : null}
+            {res.unknownVehicles?.length ? <div className="mt-1 text-xs text-red-700">Unknown organization vehicles: {res.unknownVehicles.join(', ')}. Select or correct known vehicles before confirming.</div> : null}
             {!isDemoMode && !currentPlan && <State kind="error" text="A saved organization plan is required before a disruption can be confirmed." />}
             {!isDemoMode && currentPlan && travelLegCount === 0 && <State kind="error" text="No route-leg travel times can be recovered from the saved plan. The migrations define no separate travel-time matrix, so live replanning is unavailable for this data." />}
             <div className="mt-3 flex gap-2">

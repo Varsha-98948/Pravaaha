@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Badge, Card, PageHead, State, Table } from '../components/ui'
+import { Badge, Card, PageHead, State, Table, MetricCard } from '../components/ui'
 import { getLocations, getVehicles, saveLocation, saveVehicle } from '../services/persistenceService'
 import { isDemoMode } from '../services/supabase'
 import type { Location, UserProfile, Vehicle } from '../types'
@@ -182,6 +182,11 @@ export default function Fleet({ profile = null }: { profile?: UserProfile | null
         </Card>
       </div>}
 
+    {!loading && !error && vehicles && <div className="mb-4 grid gap-3 sm:grid-cols-3">
+      <MetricCard label="Organization vehicles" value={vehicles.length} sub="Persisted fleet records" />
+      <MetricCard label="Active vehicles" value={vehicles.filter(vehicle => vehicle.status === 'active').length} sub="Available fleet" />
+      <MetricCard label="Locations" value={locations.length} sub="Depots and customers" />
+    </div>}
     <div className="grid gap-4 lg:grid-cols-2">
       <Card title={isDemoMode ? 'Sample locations' : 'Organization locations'}>
         {loading ? <State kind="loading" text="Loading organization locations…" />

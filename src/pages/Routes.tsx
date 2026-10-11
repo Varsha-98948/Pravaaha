@@ -4,6 +4,8 @@ import { getDeliveryPlan, getLocations, getVehicles, listDeliveryPlans } from '.
 import { isDemoMode } from '../services/supabase'
 import type { DeliveryPlan, Location, UserProfile, Vehicle } from '../types'
 import { fmtTime } from '../utils/time'
+import { SpatialRouteCanvas } from '../components/SpatialRouteCanvas'
+import { MetricCard } from '../components/ui'
 
 export default function Routes({ profile = null }: { profile?: UserProfile | null }) {
   const [plan, setPlan] = useState<DeliveryPlan | null>(null)
@@ -84,7 +86,14 @@ export default function Routes({ profile = null }: { profile?: UserProfile | nul
         : !hasPlan ? <State kind="empty" text="No saved route plans are available for this organization yet." />
           : !plan ? <State kind="error" text="The saved route plan could not be loaded." />
             : vehicles.length === 0 ? <State kind="empty" text="This organization has no registered vehicles." />
-              : <div className="grid gap-4 lg:grid-cols-3">{vehicles.map(vehicle => {
+              : <div className="space-y-5">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <MetricCard label="Vehicles" value={vehicles.length} sub="Organization fleet" />
+                  <MetricCard label="Scheduled stops" value={plan.routes.reduce((sum, route) => sum + route.stops.length, 0)} sub="Persisted plan stops" />
+                  <MetricCard label="Unassigned" value={plan.unassigned.length} sub="Persisted plan metrics" />
+                </div>
+                <SpatialRouteCanvas plan={plan} vehicles={vehicles} locations={locations} />
+                <div className="grid gap-4 lg:grid-cols-3">{vehicles.map(vehicle => {
                 const route = routeByVehicle.get(vehicle.id)
                 return <Card key={vehicle.id} title={vehicle.name} action={<Badge t="mute">{route?.load ?? 0}/{vehicle.capacity} load</Badge>}>
                   <ol className="space-y-3 border-l-2 border-teal/40 pl-4">
@@ -95,6 +104,6 @@ export default function Routes({ profile = null }: { profile?: UserProfile | nul
                     {(!route || route.stops.length === 0) && <li className="text-sm text-slate-500">No stops</li>}
                   </ol>
                 </Card>
-              })}</div>}
+              })}</div></div>}
   </>
 }

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Card, PageHead, State } from '../components/ui'
+import { Card, PageHead, State, MetricCard } from '../components/ui'
 import { dashboardMetrics, loadDashboardData, type DashboardData } from '../services/overviewService'
 import { isDemoMode } from '../services/supabase'
 import type { UserProfile } from '../types'
+import { SpatialRouteCanvas } from '../components/SpatialRouteCanvas'
 
 type OverviewData = Omit<DashboardData, 'metrics'>
 
@@ -18,7 +19,7 @@ export default function Dashboard({ profile = null }: { profile?: UserProfile | 
       let overview: OverviewData
       if (isDemoMode) {
         const samples = await import('../data/demo')
-        overview = { vehicles: samples.vehicles, deliveries: samples.deliveries, latestPlan: samples.originalPlan }
+        overview = { vehicles: samples.vehicles, deliveries: samples.deliveries, locations: samples.locations, latestPlan: samples.originalPlan }
       } else {
         if (!profile?.orgId) throw new Error('Your organization profile is unavailable. Sign out and sign in again, or contact your administrator.')
         overview = await loadDashboardData(profile.orgId)
@@ -51,7 +52,7 @@ export default function Dashboard({ profile = null }: { profile?: UserProfile | 
     {loading ? <State kind="loading" text="Loading organization metrics…" />
       : error ? <State kind="error" text={error} />
         : data ? <>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">{kpis.map(([label, value]) => <Card key={label}><div className="text-2xl font-semibold">{value}</div><div className="text-sm text-slate-500">{label}</div></Card>)}</div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">{kpis.map(([label, value]) => <MetricCard key={label} label={label} value={value} />)}</div>
           <div className="mt-4"><Card title="Status">
             {data.vehicles.length === 0 && data.deliveries.length === 0 && !data.latestPlan
               ? <State kind="empty" text="No organization vehicles, deliveries, or saved plans are available yet." />
@@ -59,6 +60,9 @@ export default function Dashboard({ profile = null }: { profile?: UserProfile | 
                 ? `Metrics are based on the latest saved plan${isDemoMode ? ' (demo mode)' : ' and successfully loaded organization records'}.`
                 : 'Vehicles and deliveries loaded. Plan metrics are unavailable until a plan has been saved.'} />}
           </Card></div>
+          {data.latestPlan && data.vehicles.length > 0 && <div className="mt-4"><Card title="Latest persisted route plan" sub={data.latestPlan.label}>
+            <SpatialRouteCanvas plan={data.latestPlan} vehicles={data.vehicles} locations={data.locations} />
+          </Card></div>}
         </> : <State kind="empty" text="No overview data is available." />}
   </>
 }

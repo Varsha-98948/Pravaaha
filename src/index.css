@@ -1,2 +1,124 @@
-@tailwind base;@tailwind components;@tailwind utilities;
-body{@apply bg-bg text-navy font-sans antialiased}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --brand-primary: #243607;
+    --brand-secondary: #91696E;
+    --brand-dark: #30280D;
+    --brand-neutral: #BBBEA7;
+  }
+
+  body {
+    background-color: #f2f3ec;
+    color: #30280D;
+    font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+}
+
+/* Spatial Depth & Perspective Helpers */
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.perspective-1200 {
+  perspective: 1200px;
+}
+
+.transform-style-3d {
+  transform-style: preserve-3d;
+}
+
+.translate-z-10 {
+  transform: translateZ(10px);
+}
+
+.translate-z-20 {
+  transform: translateZ(20px);
+}
+
+.translate-z-30 {
+  transform: translateZ(30px);
+}
+
+/* Spatial Panel Base */
+.spatial-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(249, 250, 246, 0.9) 100%);
+  border: 1px solid rgba(48, 40, 13, 0.08);
+  box-shadow: 0 10px 30px -5px rgba(48, 40, 13, 0.07), 0 2px 6px -1px rgba(48, 40, 13, 0.03);
+  backdrop-filter: blur(12px);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s ease;
+}
+
+.spatial-card:hover {
+  border-color: rgba(36, 54, 7, 0.2);
+}
+
+.spatial-card-dark {
+  background: linear-gradient(145deg, #30280D 0%, #201a08 100%);
+  border: 1px solid rgba(187, 190, 167, 0.18);
+  box-shadow: 0 20px 40px -10px rgba(24, 20, 6, 0.5), inset 0 1px 0 rgba(187, 190, 167, 0.15);
+  color: #f2f3ec;
+}
+
+/* Custom Tactical Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(187, 190, 167, 0.15);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(48, 40, 13, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(36, 54, 7, 0.5);
+}
+
+/* Pulse rings for active route node indicators */
+@keyframes spatialPulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(36, 54, 7, 0.5);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 12px rgba(36, 54, 7, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(36, 54, 7, 0);
+  }
+}
+
+.spatial-pulse {
+  animation: spatialPulse 2.4s infinite cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+@keyframes secondaryPulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(145, 105, 110, 0.5);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 12px rgba(145, 105, 110, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(145, 105, 110, 0);
+  }
+}
+
+.secondary-pulse {
+  animation: secondaryPulse 2.4s infinite cubic-bezier(0.4, 0, 0.6, 1);
+}

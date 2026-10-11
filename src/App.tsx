@@ -10,6 +10,8 @@ import {
   Users as UsersIcon,
   Menu,
   LogOut,
+  Radio,
+  Clock,
 } from 'lucide-react'
 import type { Role, UserProfile } from './types'
 import { isDemoMode, supabase } from './services/supabase'
@@ -237,10 +239,24 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 p-4 md:p-8">
+      <div className="min-w-0 flex-1">
+      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-[#30280D]/10 bg-[#f2f3ec]/90 px-4 py-3 backdrop-blur-md md:px-8">
+        <div className="flex items-center gap-3">
         <button className="mb-3 md:hidden" aria-label="Menu" onClick={() => setOpen(!open)}>
           <Menu />
         </button>
+          <div className="flex items-center gap-2 text-xs text-[#30280D]/75">
+            <Radio size={14} className="text-[#243607]" />
+            <span className="font-bold uppercase tracking-wider">{items.find(item => item.id === page)?.label ?? 'Operations'}</span>
+            <span className="hidden sm:inline rounded-md border border-[#243607]/20 bg-[#243607]/10 px-2 py-0.5 font-medium text-[#243607]">{isDemoMode ? 'Demo data' : profile?.orgId ?? 'Organization'}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 rounded-lg border border-[#30280D]/10 bg-white/70 px-2.5 py-1 text-xs text-[#30280D]/70">
+          <Clock size={13} className="text-[#243607]" />
+          <span>{isDemoMode ? 'Demo mode' : 'Authenticated session'}</span>
+        </div>
+      </header>
+      <main className="min-w-0 p-4 md:p-8">
         {!isDemoMode && !['dash', 'del', 'fleet', 'route', 'cmp'].includes(page) && (
           <div className="mb-4 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
             This page still shows sample data. It does not load or change your organization’s live records.
@@ -255,6 +271,7 @@ export default function App() {
                     : page === 'usr' ? <Users profile={profile} />
               : <Cur />}
       </main>
+      </div>
     </div>
   )
 }

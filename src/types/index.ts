@@ -213,4 +213,16 @@ export interface InterpretedDisruption {
   preview: string
   confirmation: ConfirmationState
   source: 'placeholder' | 'ai'
+  /** Vehicle names/IDs from text that do not match any known vehicle. */
+  unknownVehicles?: string[]
+  /** True when the interpreter detects ambiguity or missing essential parameters. */
+  needsClarification?: boolean
+  /** Clarification question to ask the dispatcher when ambiguity is present. */
+  clarificationQuestion?: string
+  /** Fields that were inferred or filled with defaults. */
+  inferredFields?: string[]
+  /** Fields that were explicitly specified in the message. */
+  explicitFields?: string[]
+  /** Error message if provider call failed. */
+  error?: string
 }
