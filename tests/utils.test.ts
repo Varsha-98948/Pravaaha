@@ -128,3 +128,170 @@ describe('schedule', () => {
     expect(stops[2].departure).toBe(Infinity)
   })
 })
+
+import { allocate } from '../src/engine/allocate'
+
+describe('allocate', () => {
+  // ─── Shared inline fixtures ──────────────────────────────────────────────
+  const mkV = (id: string, capacity: number, shiftEnd = 480, status: Vehicle['status'] = 'active'): Vehicle =>
+    ({ id, name: `Van ${id}`, capacity, depotId: 'depot', shiftStart: 0, shiftEnd, status })
+
+  const mkD = (id: string, loc: string, size: number, winStart: number, winEnd: number, priority: Delivery['priority'] = 'normal', serviceMin = 10): Delivery =>
+    ({ id, locationId: loc, size, serviceMin, window: { start: winStart, end: winEnd }, priority })
+
+  // Symmetric matrix: depot↔c1, depot↔c2, depot↔c3, all legs = 20 min
+  const mat20: TravelMatrix = {
+    depot: { depot: 0, c1: 20, c2: 20, c3: 20 },
+    c1:    { depot: 20, c1: 0, c2: 20, c3: 20 },
+    c2:    { depot: 20, c1: 20, c2: 0, c3: 20 },
+    c3:    { depot: 20, c1: 20, c2: 20, c3: 0 },
+  }
+
+  const allIds = (plan: ReturnType<typeof allocate>) =>
+    [...plan.routes.flatMap(r => r.stops.map(s => s.deliveryId)), ...plan.unassigned.map(u => u.deliveryId)]
+
+  // ─── Tests ───────────────────────────────────────────────────────────────
+
+  it('every input delivery appears exactly once in the result', () => {
+    const plan = allocate([mkV('v1', 50)], [mkD('d1', 'c1', 10, 0, 120), mkD('d2', 'c2', 10, 0, 120), mkD('d3', 'c3', 10, 0, 120)], mat20)
+    expect(allIds(plan).sort()).toEqual(['d1', 'd2', 'd3'])
+  })
+
+  it('urgent deliveries are allocated before normal deliveries', () => {
+    // v1 capacity 10: can take only one; urgent wins even though normal has earlier window.end
+    const vs = [mkV('v1', 10)]
+    const plan = allocate(vs, [mkD('dn', 'c1', 10, 0, 200, 'normal'), mkD('du', 'c2', 10, 0, 300, 'urgent')], mat20)
+    expect(plan.routes.flatMap(r => r.stops.map(s => s.deliveryId))).toContain('du')
+    expect(plan.unassigned.map(u => u.deliveryId)).toContain('dn')
+  })
+
+  it('capacity limit: delivery exceeding remaining capacity goes unassigned with reason capacity', () => {
+    const vs = [mkV('v1', 15)]
+    const plan = allocate(vs, [mkD('d1', 'c1', 10, 0, 200), mkD('d2', 'c2', 10, 0, 300)], mat20)
+    expect(plan.routes[0].load).toBe(10)
+    expect(plan.unassigned.find(u => u.deliveryId === 'd2')?.reason).toBe('capacity')
+  })
+
+  it('time window: delivery with closed window goes unassigned with reason time_window', () => {
+    // travel=20, window closes at t=10 — impossible to arrive in time
+    const plan = allocate([mkV('v1', 50)], [mkD('d1', 'c1', 5, 0, 10)], mat20)
+    expect(plan.routes[0].stops).toHaveLength(0)
+    expect(plan.unassigned[0].reason).toBe('time_window')
+  })
+
+  it('shift overrun: delivery that causes shift overrun goes unassigned', () => {
+    // shiftEnd=25: travel 20 + service 10 → departs at 30 > 25
+    const plan = allocate([mkV('v1', 50, 25)], [mkD('d1', 'c1', 5, 0, 200)], mat20)
+    expect(plan.unassigned).toHaveLength(1)
+    expect(plan.unassigned[0].reason).toBe('time_window')      // shift overrun maps to time_window
+  })
+
+  it('unreachable route: goes unassigned with reason unreachable', () => {
+    const noRoute: TravelMatrix = { depot: { depot: 0 }, c1: {} }
+    const plan = allocate([mkV('v1', 50)], [mkD('d1', 'c1', 5, 0, 480)], noRoute)
+    expect(plan.unassigned[0].reason).toBe('unreachable')
+  })
+
+  it('failed vehicle is ignored; deliveries go unassigned with reason no_vehicle', () => {
+    const plan = allocate([mkV('v1', 50, 480, 'failed')], [mkD('d1', 'c1', 5, 0, 480)], mat20)
+    expect(plan.routes).toHaveLength(0)
+    expect(plan.unassigned[0].reason).toBe('no_vehicle')
+  })
+
+  it('no vehicles at all: all deliveries unassigned with reason no_vehicle', () => {
+    const plan = allocate([], [mkD('d1', 'c1', 5, 0, 480), mkD('d2', 'c2', 5, 0, 480)], mat20)
+    expect(plan.routes).toHaveLength(0)
+    expect(plan.unassigned.every(u => u.reason === 'no_vehicle')).toBe(true)
+  })
+
+  it('vehicle capacity respected: route load never exceeds capacity', () => {
+    const vs = [mkV('v1', 30), mkV('v2', 30)]
+    const ds = [mkD('d1', 'c1', 15, 0, 480), mkD('d2', 'c2', 15, 0, 480), mkD('d3', 'c3', 15, 0, 480), mkD('d4', 'c1', 15, 0, 480)]
+    const plan = allocate(vs, ds, mat20)
+    plan.routes.forEach(r => expect(r.load).toBeLessThanOrEqual(vs.find(v => v.id === r.vehicleId)!.capacity))
+  })
+
+  it('deterministic: same inputs always produce identical results', () => {
+    const vs = [mkV('v1', 50), mkV('v2', 50)]
+    const ds = [mkD('d1', 'c1', 10, 0, 480), mkD('d2', 'c2', 10, 0, 480), mkD('d3', 'c3', 10, 0, 480)]
+    const p1 = allocate(vs, ds, mat20, 'run1')
+    const p2 = allocate(vs, ds, mat20, 'run2')
+    expect(p1.routes.map(r => ({ v: r.vehicleId, stops: r.stops.map(s => s.deliveryId) })))
+      .toEqual(p2.routes.map(r => ({ v: r.vehicleId, stops: r.stops.map(s => s.deliveryId) })))
+  })
+
+  it('input immutability: vehicles, deliveries, and matrix are not mutated', () => {
+    const vs = [mkV('v1', 50)]
+    const ds = [mkD('d1', 'c1', 10, 0, 480)]
+    const matCopy: TravelMatrix = { depot: { depot: 0, c1: 20 }, c1: { depot: 20, c1: 0 } }
+    const [vsBefore, dsBefore, matBefore] = [JSON.stringify(vs), JSON.stringify(ds), JSON.stringify(matCopy)]
+    allocate(vs, ds, matCopy)
+    expect(JSON.stringify(vs)).toBe(vsBefore)
+    expect(JSON.stringify(ds)).toBe(dsBefore)
+    expect(JSON.stringify(matCopy)).toBe(matBefore)
+  })
+
+  it('vehicle tie-break: vehicle with lexicographically smaller ID wins when completions are equal', () => {
+    // v2 is listed first in input but v1 should win the tie
+    const plan = allocate([mkV('v2', 50), mkV('v1', 50)], [mkD('d1', 'c1', 10, 0, 480)], mat20)
+    expect(plan.routes.find(r => r.stops.length > 0)?.vehicleId).toBe('v1')
+  })
+
+  it('empty deliveries: produces routes with no stops and no unassigned', () => {
+    const plan = allocate([mkV('v1', 50)], [], mat20)
+    expect(plan.routes).toHaveLength(1)
+    expect(plan.routes[0].stops).toHaveLength(0)
+    expect(plan.unassigned).toHaveLength(0)
+  })
+
+  it('mixed constraints: capacity on v1 and shift/window failure on v2 classifies as time_window', () => {
+    const v1 = mkV('v1', 5)       // capacity 5 < size 10 (capacity violation)
+    const v2 = mkV('v2', 50, 25)   // departs at t=30 > shiftEnd 25 (shift overrun)
+    const plan = allocate([v1, v2], [mkD('d1', 'c1', 10, 0, 200)], mat20)
+    expect(plan.unassigned).toHaveLength(1)
+    expect(plan.unassigned[0].reason).toBe('time_window')
+  })
+
+  it('mixed constraints: capacity on v1 and unreachable on v2 classifies as time_window', () => {
+    const v1 = mkV('v1', 5)                                      // depot has route to c1, but capacity 5 < 10
+    const v2: Vehicle = { ...mkV('v2', 50), depotId: 'depotB' }  // depotB has no route to c1
+    const splitMat: TravelMatrix = {
+      depot: { depot: 0, c1: 20 },
+      c1: { depot: 20, c1: 0 },
+      depotB: { depotB: 0 },
+    }
+    const plan = allocate([v1, v2], [mkD('d1', 'c1', 10, 0, 200)], splitMat)
+    expect(plan.unassigned).toHaveLength(1)
+    expect(plan.unassigned[0].reason).toBe('time_window')
+  })
+
+  it('mixed constraints: unreachable on v1 and time window on v2 classifies as time_window', () => {
+    const v1: Vehicle = { ...mkV('v1', 50), depotId: 'depotB' }  // no route to c1
+    const v2 = mkV('v2', 50, 25)                                 // departs at t=30 > shiftEnd 25
+    const splitMat: TravelMatrix = {
+      depot: { depot: 0, c1: 20 },
+      c1: { depot: 20, c1: 0 },
+      depotB: { depotB: 0 },
+    }
+    const plan = allocate([v1, v2], [mkD('d1', 'c1', 10, 0, 200)], splitMat)
+    expect(plan.unassigned).toHaveLength(1)
+    expect(plan.unassigned[0].reason).toBe('time_window')
+  })
+
+  it('all vehicles blocked by unreachable routes classifies as unreachable', () => {
+    const v1 = mkV('v1', 50)
+    const v2 = mkV('v2', 50)
+    const noRouteMat: TravelMatrix = { depot: { depot: 0 }, c1: {} }
+    const plan = allocate([v1, v2], [mkD('d1', 'c1', 10, 0, 200)], noRouteMat)
+    expect(plan.unassigned).toHaveLength(1)
+    expect(plan.unassigned[0].reason).toBe('unreachable')
+  })
+
+  it('capacity is the only blocking constraint across all vehicles classifies as capacity', () => {
+    const v1 = mkV('v1', 5)
+    const v2 = mkV('v2', 8)
+    const plan = allocate([v1, v2], [mkD('d1', 'c1', 10, 0, 200)], mat20)
+    expect(plan.unassigned).toHaveLength(1)
+    expect(plan.unassigned[0].reason).toBe('capacity')
+  })
+})
