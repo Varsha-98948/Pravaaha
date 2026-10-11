@@ -18,8 +18,20 @@ import type {
   VehicleFailureEvent,
 } from '../types'
 import { validateInterpretedDisruption } from './validation'
+import {
+  OpenRouterKeyManager,
+  getGlobalOpenRouterKeyManager,
+  type KeySlotPublicInfo,
+} from './openrouterKeyManager'
+import {
+  DEFAULT_FREE_MODEL,
+  DEFAULT_FREE_MODEL_ALLOWLIST,
+  isApprovedFreeModel,
+  parseFreeModelAllowlist,
+  executeOpenRouterRequestWithFailover,
+} from './openrouterClient'
 
-export type AiProviderType = 'gemini' | 'openai' | 'groq' | 'anthropic'
+export type AiProviderType = 'gemini' | 'openai' | 'groq' | 'anthropic' | 'openrouter'
 
 export interface AiConfig {
   provider: AiProviderType
@@ -27,6 +39,11 @@ export interface AiConfig {
   model: string
   endpoint?: string
   timeoutMs?: number
+  openrouter?: {
+    keyManager: OpenRouterKeyManager
+    freeModelAllowlist: string[]
+    paidFallbackEnabled: boolean
+  }
 }
 
 export interface LocationInfo {
@@ -48,12 +65,23 @@ export interface InterpretParams {
   fetchFn?: typeof fetch
 }
 
+export interface OpenRouterStatusInfo {
+  slots: KeySlotPublicInfo[]
+  healthyCount: number
+  totalConfigured: number
+  freeModel: string
+  allowlist: string[]
+  paidFallbackEnabled: boolean
+  allExhaustedReason: string | null
+}
+
 export interface AiStatusResult {
   configured: boolean
   provider: AiProviderType | null
   model: string | null
   missingConfig: string[]
   error?: string
+  openrouter?: OpenRouterStatusInfo
 }
 
 function getSystemEnv(): Record<string, string | undefined> {
@@ -76,11 +104,17 @@ export function resolveAiConfig(
   let model: string = ''
   let endpoint: string = env.AI_API_ENDPOINT || ''
 
-  if (explicitProvider && ['gemini', 'openai', 'groq', 'anthropic'].includes(explicitProvider)) {
+  if (explicitProvider && ['gemini', 'openai', 'groq', 'anthropic', 'openrouter'].includes(explicitProvider)) {
     provider = explicitProvider
   }
 
-  // Check keys
+  // OpenRouter key slots
+  const openrouterKey1 = env.OPENROUTER_API_KEY_1 || env.OPENROUTER_API_KEY || ''
+  const openrouterKey2 = env.OPENROUTER_API_KEY_2 || ''
+  const openrouterKey3 = env.OPENROUTER_API_KEY_3 || ''
+  const hasOpenRouterKeys = Boolean(openrouterKey1 || openrouterKey2 || openrouterKey3)
+
+  // Other direct provider keys
   const geminiKey = env.GEMINI_API_KEY || (provider === 'gemini' ? env.AI_API_KEY : '')
   const openaiKey = env.OPENAI_API_KEY || (provider === 'openai' ? env.AI_API_KEY : '')
   const groqKey = env.GROQ_API_KEY || (provider === 'groq' ? env.AI_API_KEY : '')
@@ -88,11 +122,104 @@ export function resolveAiConfig(
   const genericKey = env.AI_API_KEY || ''
 
   if (!provider) {
-    if (geminiKey) provider = 'gemini'
+    if (hasOpenRouterKeys) provider = 'openrouter'
+    else if (geminiKey) provider = 'gemini'
     else if (openaiKey) provider = 'openai'
     else if (groqKey) provider = 'groq'
     else if (anthropicKey) provider = 'anthropic'
     else if (genericKey) provider = 'gemini' // default to gemini if generic key provided
+  }
+
+  // Handle OpenRouter provider
+  if (provider === 'openrouter') {
+    const keyManager = getGlobalOpenRouterKeyManager(env)
+    const configuredCount = keyManager.getConfiguredCount()
+    const allowlist = parseFreeModelAllowlist(env.OPENROUTER_FREE_MODEL_ALLOWLIST)
+    const paidFallbackEnabled = env.OPENROUTER_PAID_FALLBACK_ENABLED === 'true'
+    model = (env.OPENROUTER_FREE_MODEL || env.AI_MODEL || DEFAULT_FREE_MODEL).trim()
+    if (!endpoint) endpoint = env.OPENROUTER_API_ENDPOINT || 'https://openrouter.ai/api/v1/chat/completions'
+
+    const openrouterStatus: OpenRouterStatusInfo = {
+      slots: keyManager.getPublicStatus().slots,
+      healthyCount: keyManager.getPublicStatus().healthyCount,
+      totalConfigured: configuredCount,
+      freeModel: model,
+      allowlist,
+      paidFallbackEnabled,
+      allExhaustedReason: keyManager.getPublicStatus().allExhaustedReason,
+    }
+
+    // Security check: paid fallback is prohibited
+    if (paidFallbackEnabled) {
+      return {
+        config: null,
+        status: {
+          configured: false,
+          provider: 'openrouter',
+          model,
+          missingConfig: [
+            'OPENROUTER_PAID_FALLBACK_ENABLED is enabled. Paid model fallbacks are strictly prohibited; please set OPENROUTER_PAID_FALLBACK_ENABLED=false.',
+          ],
+          openrouter: openrouterStatus,
+        },
+      }
+    }
+
+    // Security check: model must be in approved free allowlist
+    if (!isApprovedFreeModel(model, allowlist)) {
+      return {
+        config: null,
+        status: {
+          configured: false,
+          provider: 'openrouter',
+          model,
+          missingConfig: [
+            `OPENROUTER_FREE_MODEL "${model}" is not on the approved free-model allowlist ending in :free. Please select an approved free model.`,
+          ],
+          openrouter: openrouterStatus,
+        },
+      }
+    }
+
+    // Key check: at least one key slot must be configured
+    if (configuredCount === 0) {
+      return {
+        config: null,
+        status: {
+          configured: false,
+          provider: 'openrouter',
+          model,
+          missingConfig: [
+            'OPENROUTER_API_KEY_1 (or OPENROUTER_API_KEY_2 / OPENROUTER_API_KEY_3) is required for OpenRouter integration.',
+          ],
+          openrouter: openrouterStatus,
+        },
+      }
+    }
+
+    const timeoutMs = env.AI_TIMEOUT_MS ? parseInt(env.AI_TIMEOUT_MS, 10) : 15000
+
+    return {
+      config: {
+        provider: 'openrouter',
+        apiKey: 'openrouter-managed-key',
+        model,
+        endpoint,
+        timeoutMs,
+        openrouter: {
+          keyManager,
+          freeModelAllowlist: allowlist,
+          paidFallbackEnabled: false,
+        },
+      },
+      status: {
+        configured: true,
+        provider: 'openrouter',
+        model,
+        missingConfig: [],
+        openrouter: openrouterStatus,
+      },
+    }
   }
 
   if (provider === 'gemini') {
@@ -115,7 +242,7 @@ export function resolveAiConfig(
   if (!provider || !apiKey) {
     const missing: string[] = []
     if (!provider && !apiKey) {
-      missing.push('AI_API_KEY (or GEMINI_API_KEY / OPENAI_API_KEY)')
+      missing.push('AI_API_KEY (or GEMINI_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY_1)')
     } else if (!apiKey && provider) {
       missing.push(`${(provider as string).toUpperCase()}_API_KEY or AI_API_KEY`)
     }
@@ -481,6 +608,24 @@ export async function callAiProvider(
       return extractJsonFromText(content)
     }
 
+    if (config.provider === 'openrouter') {
+      const keyManager = config.openrouter?.keyManager || getGlobalOpenRouterKeyManager()
+      const allowlist = config.openrouter?.freeModelAllowlist || DEFAULT_FREE_MODEL_ALLOWLIST
+      const paidFallbackEnabled = Boolean(config.openrouter?.paidFallbackEnabled)
+
+      return executeOpenRouterRequestWithFailover({
+        systemPrompt,
+        userPrompt,
+        model: config.model,
+        allowlist,
+        keyManager,
+        endpoint: config.endpoint,
+        timeoutMs: config.timeoutMs,
+        fetchFn: fetchImpl,
+        paidFallbackEnabled,
+      })
+    }
+
     throw new Error(`Unsupported AI provider: ${config.provider}`)
   } catch (err: unknown) {
     if ((err as { name?: string }).name === 'AbortError') {
@@ -530,7 +675,7 @@ export async function interpretDisruptionWithAi(
       rawText: text,
       event: null,
       missing: [
-        'AI interpreter not configured. Please set AI_API_KEY (or GEMINI_API_KEY / OPENAI_API_KEY) in .env.',
+        'AI interpreter not configured. Please set OPENROUTER_API_KEY_1 (or GEMINI_API_KEY / OPENAI_API_KEY) in .env.',
       ],
       unknownLocations: [],
       unknownVehicles: [],

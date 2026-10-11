@@ -223,7 +223,9 @@ export default function Disruptions() {
                   {aiStatus.provider} ({aiStatus.model})
                 </span>
                 <span className="ml-2 text-[#30280D]/60 hidden sm:inline">
-                  — Structured JSON natural-language parser active
+                  {aiStatus.openrouter
+                    ? `— ${aiStatus.openrouter.healthyCount}/${aiStatus.openrouter.totalConfigured} keys active (Free Tier :free)`
+                    : '— Structured JSON natural-language parser active'}
                 </span>
               </div>
             </>
@@ -237,14 +239,14 @@ export default function Disruptions() {
                   AI Gateway Offline:
                 </span>{' '}
                 <span className="text-[#30280D]/80">
-                  Set <code className="rounded bg-black/10 px-1 py-0.5 font-mono text-[11px]">AI_API_KEY</code> in <code className="font-mono">.env</code>. Quick Presets below remain 100% operational.
+                  Set <code className="rounded bg-black/10 px-1 py-0.5 font-mono text-[11px]">OPENROUTER_API_KEY_1</code> (or <code className="font-mono">AI_API_KEY</code>) in <code className="font-mono">.env</code>. Quick Presets below remain 100% operational.
                 </span>
               </div>
             </>
           )}
         </div>
         <Badge t={aiStatus.configured ? 'ok' : 'warn'}>
-          {aiStatus.configured ? 'Active' : 'Setup Required'}
+          {aiStatus.configured ? (aiStatus.openrouter ? `${aiStatus.openrouter.healthyCount} Keys Ready` : 'Active') : 'Setup Required'}
         </Badge>
       </div>
 
