@@ -88,39 +88,46 @@ alter table disruptions add constraint disruptions_id_org_id_uniq unique (id, or
 
 -- Enforce organization scoping across relations
 alter table vehicles
+  drop constraint if exists vehicles_depot_id_fkey,
   drop constraint if exists vehicles_depot_org_fk,
   add constraint vehicles_depot_org_fk foreign key (depot_id, org_id)
     references locations(id, org_id) on delete restrict;
 
 alter table deliveries
+  drop constraint if exists deliveries_location_id_fkey,
   drop constraint if exists deliveries_location_org_fk,
   add constraint deliveries_location_org_fk foreign key (location_id, org_id)
     references locations(id, org_id) on delete restrict;
 
 alter table plans
+  drop constraint if exists plans_parent_plan_id_fkey,
   drop constraint if exists plans_parent_org_fk,
   add constraint plans_parent_org_fk foreign key (parent_plan_id, org_id)
-    references plans(id, org_id) on delete set null;
+    references plans(id, org_id) on delete set null (parent_plan_id);
 
 alter table plan_stops
+  drop constraint if exists plan_stops_plan_id_fkey,
   drop constraint if exists plan_stops_plan_org_fk,
   add constraint plan_stops_plan_org_fk foreign key (plan_id, org_id)
     references plans(id, org_id) on delete cascade;
 
 alter table plan_stops
+  drop constraint if exists plan_stops_vehicle_id_fkey,
   drop constraint if exists plan_stops_vehicle_org_fk,
   add constraint plan_stops_vehicle_org_fk foreign key (vehicle_id, org_id)
     references vehicles(id, org_id) on delete cascade;
 
 alter table plan_stops
+  drop constraint if exists plan_stops_delivery_id_fkey,
   drop constraint if exists plan_stops_delivery_org_fk,
   add constraint plan_stops_delivery_org_fk foreign key (delivery_id, org_id)
     references deliveries(id, org_id) on delete cascade;
 
 alter table disruptions
+  drop constraint if exists disruptions_confirmed_by_fkey,
   drop constraint if exists disruptions_confirmed_by_org_fk,
   add constraint disruptions_confirmed_by_org_fk foreign key (confirmed_by, org_id)
-    references profiles(id, org_id) on delete set null;
+    references profiles(id, org_id) on delete set null (confirmed_by);
 
 -- 7. Dedicated Append-Only Audit History Table
 create table if not exists audit_logs (
