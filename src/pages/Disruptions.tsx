@@ -358,218 +358,114 @@ export default function Disruptions({
 
   return <>
     <PageHead
-      title="Disruptions"
-      sub="Describe or select what happened. Nothing is applied to routes until explicitly confirmed."
+      title="Disruptions & Dynamic Replanning"
+      sub="Describe an incident or prepare a structured event. Nothing changes until you confirm the preview."
     />
 
     <div className="space-y-6">
-      <PageHead
-        title="Disruptions & Dynamic Replanning"
-        sub="Incident intake, natural-language AI interpretation, and deterministic route plan regeneration."
-        badge={
-          <Badge t="ok" dot>
-            {appliedEvents.length} Applied Events
-          </Badge>
-        }
-      />
-
-      {/* AI Gateway Status Banner */}
-      <div
-        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 text-xs transition-all shadow-sm ${aiStatus.configured
-            ? 'border-[#243607]/25 bg-[#243607]/07 text-[#30280D]'
-            : 'border-[#91696E]/25 bg-[#91696E]/08 text-[#30280D]'
-          }`}
-      >
-        <div className="flex items-center gap-2.5">
-          {aiStatus.configured ? (
-            <>
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#243607] text-[#f2f3ec] shadow-sm">
-                <Sparkles size={15} />
-              </div>
-              <div>
-                <span className="font-bold text-[#30280D]">
-                  AI Disruption Gateway Online:
-                </span>{' '}
-                <span className="font-medium text-[#243607] capitalize">
-                  {aiStatus.provider} ({aiStatus.model})
-                </span>
-                <span className="ml-2 text-[#30280D]/60 hidden sm:inline">
-                  {aiStatus.openrouter
-                    ? `— ${aiStatus.openrouter.healthyCount}/${aiStatus.openrouter.totalConfigured} keys active (Free Tier :free)`
-                    : '— Structured JSON natural-language parser active'}
-                </span>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#91696E] text-[#f2f3ec] shadow-sm">
-                <AlertCircle size={15} />
-              </div>
-              <div>
-                <span className="font-bold text-[#30280D]">
-                  AI Gateway Offline:
-                </span>{' '}
-                <span className="text-[#30280D]/80">
-                  Set <code className="rounded bg-black/10 px-1 py-0.5 font-mono text-[11px]">OPENROUTER_API_KEY_1</code> (or <code className="font-mono">AI_API_KEY</code>) in <code className="font-mono">.env</code>. Quick Presets below remain 100% operational.
-                </span>
-              </div>
-            </>
-          )}
-        </div>
-        <Badge t={aiStatus.configured ? 'ok' : 'warn'}>
-          {aiStatus.configured ? (aiStatus.openrouter ? `${aiStatus.openrouter.healthyCount} Keys Ready` : 'Active') : 'Setup Required'}
-        </Badge>
-      </div>
-
-      {/* Incident Intake & Preview Console */}
       <Card
-        title="Incident Intake & Interpretation Console"
-        sub="Describe unexpected road closures, breakdowns, or urgent deliveries. Nothing modifies active routes until explicitly confirmed."
+        title="Incident Intake & Preview"
+        sub="Interpret a natural-language report or enter a structured event. Live changes are saved only after confirmation."
+        action={<button onClick={() => void load()} disabled={loading || submitting} className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-50">{loading ? 'Refreshing…' : 'Refresh'}</button>}
       >
-        {/* Quick Presets */}
-        <div className="mb-4">
-          <span className="text-xs font-bold uppercase tracking-wider text-[#30280D]/65">
-            Tactical Incident Presets:
-          </span>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {QUICK_DISRUPTIONS.map((q) => (
-              <button
-                key={q.label}
-                onClick={() => {
-                  setText(q.interpretation.rawText)
-                  setRes(q.interpretation)
-                  setErr('')
-                  setSuccess('')
-                }}
-                className="flex items-center gap-1.5 rounded-lg border border-[#30280D]/15 bg-white/80 px-3 py-1.5 text-xs font-medium text-[#30280D] hover:bg-[#243607]/08 hover:border-[#243607]/40 hover:-translate-y-0.5 transition-all shadow-sm"
-              >
-                <Zap size={13} className="text-[#91696E]" />
-                {q.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        {loading ? <State kind="loading" text="Loading organization disruption data…" /> : loadError ? <>
+          <State kind="error" text={loadError} />
+          <button onClick={() => void load()} className="mt-3 rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700">Retry</button>
+        </> : <>
+          {isDemoMode && <div className="mb-4">
+            <div className="mb-2 text-xs font-semibold text-slate-600">Quick incident scenarios (demo mode)</div>
+            <div className="flex flex-wrap gap-2">
+              {QUICK_DISRUPTIONS.map(item => <button
+                key={item.label}
+                onClick={() => { setText(item.interpretation.rawText); setRes(item.interpretation); setErr(''); setSuccess('') }}
+                disabled={!canWrite || submitting}
+                className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >{item.label}</button>)}
+            </div>
+          </div>}
 
-        {/* Textarea Input */}
-        <div className="space-y-1.5">
-          <label className="block text-xs font-semibold text-[#30280D]/80">
-            Natural-Language Incident Report:
+          {!isDemoMode && <div className="mb-3 grid gap-3 rounded border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+            <label className="text-xs text-slate-600">Disruption type
+              <select value={kind} onChange={event => setKind(event.target.value as EventKind)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm">
+                <option value="vehicle_failure">Vehicle failure</option><option value="road_closure">Road closure</option><option value="urgent_delivery">Urgent delivery</option>
+              </select>
+            </label>
+            <label className="text-xs text-slate-600">Effective time (simulation minutes)
+              <input type="number" min="0" value={at} onChange={event => setAt(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" />
+            </label>
+            {kind === 'vehicle_failure' && <label className="text-xs text-slate-600 sm:col-span-2">Vehicle
+              <select value={vehicleId} onChange={event => setVehicleId(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select a vehicle</option>{vehicles.map(vehicle => <option key={vehicle.id} value={vehicle.id}>{vehicle.name}</option>)}</select>
+            </label>}
+            {kind === 'road_closure' && <>
+              <label className="text-xs text-slate-600">From location<select value={fromLocation} onChange={event => setFromLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+              <label className="text-xs text-slate-600">To location<select value={toLocation} onChange={event => setToLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.filter(location => location.id !== fromLocation).map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+            </>}
+            {kind === 'urgent_delivery' && <>
+              <label className="text-xs text-slate-600 sm:col-span-2">Delivery location<select value={deliveryLocation} onChange={event => setDeliveryLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.filter(location => location.kind === 'customer').map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+              <label className="text-xs text-slate-600">Size<input type="number" min="1" value={deliverySize} onChange={event => setDeliverySize(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
+              <label className="text-xs text-slate-600">Service minutes<input type="number" min="0" value={serviceMin} onChange={event => setServiceMin(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
+              <label className="text-xs text-slate-600">Window start<input type="number" min="0" value={windowStart} onChange={event => setWindowStart(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
+              <label className="text-xs text-slate-600">Window end<input type="number" min="1" value={windowEnd} onChange={event => setWindowEnd(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
+            </>}
+          </div>}
+
+          <label className="block text-xs font-semibold text-slate-700">Incident report
+            <textarea value={text} onChange={event => setText(event.target.value)} rows={3} placeholder="Describe a road closure, vehicle breakdown, or urgent delivery" className="mt-1 w-full rounded border border-slate-300 bg-white p-3 text-sm" />
           </label>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            rows={3}
-            placeholder="e.g. Van 2 broke down near Harbor Grocers at 09:30, or Road closure between Central Depot and Harbor Grocers starting at 09:00"
-            className="w-full rounded-xl border border-[#30280D]/20 bg-white p-3 text-sm text-[#30280D] placeholder-[#30280D]/40 focus:border-[#243607] focus:outline-none focus:ring-2 focus:ring-[#243607]/15 transition-all shadow-spatial-inset"
-          />
-        </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {!isDemoMode && <button onClick={() => void prepareWithAi()} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded bg-[#243607] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{interpreting ? 'Interpreting…' : 'Interpret with AI'}</button>}
+            <button onClick={prepare} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-40">Prepare structured event</button>
+          </div>
+          {!canWrite && <div className="mt-2 text-xs text-slate-500">Your role is read-only. You can review disruption data but cannot prepare or confirm changes.</div>}
 
-        {/* Submit Button */}
-        <div className="mt-3 flex items-center gap-3">
-          <SpatialButton
-            variant="primary"
-            onClick={run}
-            disabled={!text.trim() || interpreting}
-            icon={<Bot size={15} />}
-          >
-            {interpreting ? 'Interpreting Report...' : 'Interpret Incident'}
-          </SpatialButton>
-          {interpreting && (
-            <span className="text-xs text-[#243607] font-medium animate-pulse">
-              Parsing with AI provider...
-            </span>
-          )}
-        </div>
+          {res && <div className="mt-4 rounded border border-slate-200 bg-slate-50/50 p-4 text-sm">
+            <div className="flex flex-wrap items-center gap-2"><Badge t={res.source === 'ai' ? 'ok' : 'warn'}>{res.source}</Badge><span className="font-medium text-slate-800">{res.preview}</span></div>
+            {res.event && <div className="mt-2 text-xs text-slate-600"><span className="font-semibold">Event type:</span> {res.event.type} · <span className="font-semibold">Effective time:</span> {fmtTime(res.event.at)} ({res.event.at}m)</div>}
+            {res.missing.length > 0 && <div className="mt-1 text-xs text-amber-700">Missing: {res.missing.join(', ')}</div>}
+            {res.unknownLocations?.length ? <div className="mt-1 text-xs text-red-700">Unknown organization locations: {res.unknownLocations.join(', ')}. Select or correct known locations before confirming.</div> : null}
+            {res.unknownVehicles?.length ? <div className="mt-1 text-xs text-red-700">Unknown organization vehicles: {res.unknownVehicles.join(', ')}. Select or correct known vehicles before confirming.</div> : null}
+            {res.needsClarification && res.clarificationQuestion && <div className="mt-1 text-xs text-amber-700">Please clarify: {res.clarificationQuestion}</div>}
+            {!isDemoMode && !currentPlan && <State kind="error" text="A saved organization plan is required before a disruption can be confirmed." />}
+            {!isDemoMode && currentPlan && travelLegCount === 0 && <State kind="error" text="No route-leg travel times can be recovered from the saved plan. Live replanning is unavailable for this data." />}
+            <div className="mt-3 flex gap-2">
+              <button onClick={() => void confirm()} disabled={!res.event || !canWrite || submitting || (!isDemoMode && (!currentPlan || travelLegCount === 0))} className="rounded bg-navy px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{submitting ? 'Saving disruption and plan…' : 'Confirm and replan'}</button>
+              <button onClick={() => { setRes(null); setErr('') }} disabled={submitting} className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50">Reject</button>
+            </div>
+          </div>}
+        </>}
 
-        {/* Interpretation Result Card */}
-        {res && (
-          <div className="mt-5 rounded-xl border border-[#30280D]/15 bg-[#f8f9f4] p-4 text-sm space-y-3.5 shadow-spatial-md animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-[#30280D]/10 pb-3">
-              <div className="flex items-center gap-2">
-                <Badge t={res.source === 'ai' ? 'ok' : 'warn'}>
-                  {res.source === 'ai' ? 'AI Structured' : 'Manual Preset'}
-                </Badge>
-                <span className="font-bold text-sm text-[#30280D]">{res.preview}</span>
+        {success && <State kind="success" text={success} />}
+        {err && <State kind="error" text={err} />}
+      </Card>
+
+      {!loading && !loadError && <Card title="Persisted Disruptions">
+        {disruptions.length === 0 ? <State kind="empty" text="No disruptions have been recorded for this organization." /> : <div className="space-y-1.5">
+          {disruptions.map(event => <div key={event.id} className="flex items-center gap-2 text-xs text-slate-700"><Badge t="bad">{event.type}</Badge><span>at {fmtTime(event.at)} ({event.at}m) — ID: {event.id}</span></div>)}
+        </div>}
+      </Card>}
+
+      {!loading && !loadError && <Card title={`Active Plan${currentPlan ? ` (${currentPlan.label})` : ''}`}>
+        {!currentPlan ? <State kind="empty" text="No saved organization plan is available to display or replan." /> : <>
+          <div className="mb-4 flex flex-wrap gap-4 text-xs text-slate-600">
+            <div><span className="font-semibold text-slate-800">Routes:</span> {currentPlan.routes.length}</div>
+            <div><span className="font-semibold text-slate-800">Scheduled stops:</span> {currentPlan.routes.reduce((count, route) => count + route.stops.length, 0)}</div>
+            <div><span className="font-semibold text-slate-800">Unassigned deliveries:</span> {currentPlan.unassigned.length}</div>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            {currentPlan.routes.map(route => {
+              const vehicle = world?.vehicles.find(item => item.id === route.vehicleId)
+              return <div key={route.vehicleId} className="rounded-lg border border-slate-200 bg-slate-50/50 p-3">
+                <div className="mb-2 flex items-center justify-between"><span className="font-semibold text-slate-800">{vehicle?.name ?? route.vehicleId}</span><Badge t={vehicle?.status === 'failed' ? 'bad' : 'mute'}>{route.load}/{vehicle?.capacity ?? 0} load {vehicle?.status === 'failed' ? '(failed)' : ''}</Badge></div>
+                <ol className="space-y-2 border-l-2 border-teal/40 pl-3">
+                  {route.stops.map(stop => <li key={stop.deliveryId} className="text-xs"><div className="font-medium text-slate-800">{fmtTime(stop.serviceStart)} {locName(stop.locationId)} <Badge t={stop.status === 'completed' ? 'ok' : stop.status === 'late' ? 'warn' : stop.status === 'skipped' ? 'bad' : 'mute'}>{stop.status}</Badge></div><div className="text-slate-500">Arr {fmtTime(stop.arrival)}{stop.waitMin > 0 && ` · waits ${stop.waitMin}m`} · Dep {fmtTime(stop.departure)}</div></li>)}
+                  {route.stops.length === 0 && <li className="text-xs text-slate-400">No stops assigned</li>}
+                </ol>
               </div>
-            </div>
-          </div> : <div className="mb-3 grid gap-3 rounded border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
-          <label className="text-xs text-slate-600">Disruption type
-            <select value={kind} onChange={event => setKind(event.target.value as EventKind)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm">
-              <option value="vehicle_failure">Vehicle failure</option><option value="road_closure">Road closure</option><option value="urgent_delivery">Urgent delivery</option>
-            </select>
-          </label>
-          <label className="text-xs text-slate-600">Effective time (simulation minutes)
-            <input type="number" min="0" value={at} onChange={event => setAt(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" />
-          </label>
-          {kind === 'vehicle_failure' && <label className="text-xs text-slate-600 sm:col-span-2">Vehicle
-            <select value={vehicleId} onChange={event => setVehicleId(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select a vehicle</option>{vehicles.map(vehicle => <option key={vehicle.id} value={vehicle.id}>{vehicle.name}</option>)}</select>
-          </label>}
-          {kind === 'road_closure' && <>
-            <label className="text-xs text-slate-600">From location<select value={fromLocation} onChange={event => setFromLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
-            <label className="text-xs text-slate-600">To location<select value={toLocation} onChange={event => setToLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.filter(location => location.id !== fromLocation).map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
-          </>}
-          {kind === 'urgent_delivery' && <>
-            <label className="text-xs text-slate-600 sm:col-span-2">Delivery location<select value={deliveryLocation} onChange={event => setDeliveryLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.filter(location => location.kind === 'customer').map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
-            <label className="text-xs text-slate-600">Size<input type="number" min="1" value={deliverySize} onChange={event => setDeliverySize(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
-            <label className="text-xs text-slate-600">Service minutes<input type="number" min="0" value={serviceMin} onChange={event => setServiceMin(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
-            <label className="text-xs text-slate-600">Window start<input type="number" min="0" value={windowStart} onChange={event => setWindowStart(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
-            <label className="text-xs text-slate-600">Window end<input type="number" min="1" value={windowEnd} onChange={event => setWindowEnd(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
-          </>}
-        </div>}
-
-        <textarea value={text} onChange={event => setText(event.target.value)} rows={3} placeholder="Describe what happened" className="w-full rounded border border-slate-300 p-2 text-sm" />
-        <div className="mt-2 flex gap-2">
-          {!isDemoMode && <button onClick={() => void prepareWithAi()} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded bg-[#243607] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{interpreting ? 'Interpreting…' : 'Interpret with AI'}</button>}
-          <button onClick={prepare} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-40">Prepare structured event</button>
-        </div>
-
-        {res && <div className="mt-4 rounded border border-slate-200 bg-slate-50/50 p-4 text-sm">
-          <div className="flex items-center gap-2"><Badge t="warn">{res.source}</Badge><span className="font-medium text-slate-800">{res.preview}</span></div>
-          {res.event && <div className="mt-2 text-xs text-slate-600"><span className="font-semibold">Event Type:</span> {res.event.type} · <span className="font-semibold">Effective Time:</span> {fmtTime(res.event.at)} ({res.event.at}m)</div>}
-          {res.missing.length > 0 && <div className="mt-1 text-xs text-amber-700">Missing: {res.missing.join(', ')}</div>}
-          {res.unknownLocations?.length ? <div className="mt-1 text-xs text-red-700">Unknown organization locations: {res.unknownLocations.join(', ')}. Select or correct known locations before confirming.</div> : null}
-          {res.unknownVehicles?.length ? <div className="mt-1 text-xs text-red-700">Unknown organization vehicles: {res.unknownVehicles.join(', ')}. Select or correct known vehicles before confirming.</div> : null}
-          {!isDemoMode && !currentPlan && <State kind="error" text="A saved organization plan is required before a disruption can be confirmed." />}
-          {!isDemoMode && currentPlan && travelLegCount === 0 && <State kind="error" text="No route-leg travel times can be recovered from the saved plan. The migrations define no separate travel-time matrix, so live replanning is unavailable for this data." />}
-          <div className="mt-3 flex gap-2">
-            <button onClick={() => void confirm()} disabled={!res.event || !canWrite || submitting || (!isDemoMode && (!currentPlan || travelLegCount === 0))} className="rounded bg-navy px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{submitting ? 'Saving disruption and plan…' : 'Confirm and replan'}</button>
-            <button onClick={() => { setRes(null); setErr('') }} disabled={submitting} className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50">Reject</button>
+            })}
           </div>
-        </div>}
-      </>}
-
-      {success && <State kind="success" text={success} />}
-      {err && <State kind="error" text={err} />}
-    </Card>
-
-    {!loading && !loadError && <Card title="Persisted Disruptions">
-      {disruptions.length === 0 ? <State kind="empty" text="No disruptions have been recorded for this organization." /> : <div className="space-y-1.5">
-        {disruptions.map(event => <div key={event.id} className="flex items-center gap-2 text-xs text-slate-700"><Badge t="bad">{event.type}</Badge><span>at {fmtTime(event.at)} ({event.at}m) — ID: {event.id}</span></div>)}
-      </div>}
-    </Card>}
-
-    {!loading && !loadError && <Card title={`Active Plan${currentPlan ? ` (${currentPlan.label})` : ''}`}>
-      {!currentPlan ? <State kind="empty" text="No saved organization plan is available to display or replan." /> : <>
-        <div className="mb-4 flex flex-wrap gap-4 text-xs text-slate-600">
-          <div><span className="font-semibold text-slate-800">Routes:</span> {currentPlan.routes.length}</div>
-          <div><span className="font-semibold text-slate-800">Scheduled stops:</span> {currentPlan.routes.reduce((count, route) => count + route.stops.length, 0)}</div>
-          <div><span className="font-semibold text-slate-800">Unassigned deliveries:</span> {currentPlan.unassigned.length}</div>
-        </div>
-        <div className="grid gap-4 lg:grid-cols-3">
-          {currentPlan.routes.map(route => {
-            const vehicle = world?.vehicles.find(item => item.id === route.vehicleId)
-            return <div key={route.vehicleId} className="rounded-lg border border-slate-200 bg-slate-50/50 p-3">
-              <div className="mb-2 flex items-center justify-between"><span className="font-semibold text-slate-800">{vehicle?.name ?? route.vehicleId}</span><Badge t={vehicle?.status === 'failed' ? 'bad' : 'mute'}>{route.load}/{vehicle?.capacity ?? 0} load {vehicle?.status === 'failed' ? '(failed)' : ''}</Badge></div>
-              <ol className="space-y-2 border-l-2 border-teal/40 pl-3">
-                {route.stops.map(stop => <li key={stop.deliveryId} className="text-xs"><div className="font-medium text-slate-800">{fmtTime(stop.serviceStart)} {locName(stop.locationId)} <Badge t={stop.status === 'completed' ? 'ok' : stop.status === 'late' ? 'warn' : stop.status === 'skipped' ? 'bad' : 'mute'}>{stop.status}</Badge></div><div className="text-slate-500">Arr {fmtTime(stop.arrival)}{stop.waitMin > 0 && ` · waits ${stop.waitMin}m`} · Dep {fmtTime(stop.departure)}</div></li>)}
-                {route.stops.length === 0 && <li className="text-xs text-slate-400">No stops assigned</li>}
-              </ol>
-            </div>
-          })}
-        </div>
-        {currentPlan.unassigned.length > 0 && <div className="mt-4 border-t border-slate-200 pt-3"><div className="mb-2 text-xs font-semibold text-slate-700">Unassigned Deliveries:</div><div className="flex flex-wrap gap-2">{currentPlan.unassigned.map(item => <div key={item.deliveryId} className="rounded border border-red-200 bg-red-50 p-2 text-xs"><span className="font-semibold text-red-800">{item.deliveryId}:</span> <Badge t="bad">{item.reason}</Badge><div className="mt-0.5 text-slate-600">{item.detail}</div></div>)}</div></div>}
-      </>}
-    </Card>}
-  </div >
+          {currentPlan.unassigned.length > 0 && <div className="mt-4 border-t border-slate-200 pt-3"><div className="mb-2 text-xs font-semibold text-slate-700">Unassigned deliveries:</div><div className="flex flex-wrap gap-2">{currentPlan.unassigned.map(item => <div key={item.deliveryId} className="rounded border border-red-200 bg-red-50 p-2 text-xs"><span className="font-semibold text-red-800">{item.deliveryId}:</span> <Badge t="bad">{item.reason}</Badge><div className="mt-0.5 text-slate-600">{item.detail}</div></div>)}</div></div>}
+        </>}
+      </Card>}
+    </div>
   </>
 }
