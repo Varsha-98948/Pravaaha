@@ -3,8 +3,8 @@ import { fmtTime, isValidWindow } from '../src/utils/time'
 import { originalPlan, vehicles, deliveries, matrix, revisedPlan } from '../src/data/demo'
 import { comparePlans } from '../src/engine/compare'
 import { replan } from '../src/engine/replan'
-import { computeStops, validateRoute } from '../src/engine/schedule'
-import type { Delivery, RouteStop, TravelMatrix, Vehicle } from '../src/types'
+import { computeStops, validatePlan, validateRoute } from '../src/engine/schedule'
+import type { Delivery, DeliveryPlan, RouteStop, TravelMatrix, Vehicle } from '../src/types'
 
 describe('time', () => { it('formats', () => { expect(fmtTime(0)).toBe('08:00'); expect(fmtTime(90)).toBe('09:30') }); it('validates', () => { expect(isValidWindow({ start: 10, end: 5 })).toBe(false) }) })
 describe('engine', () => {
@@ -103,6 +103,79 @@ describe('schedule', () => {
     const violations = validateRoute(van, [stop], dMap(d))
     expect(violations).toHaveLength(1)
     expect(violations[0]).toMatch(/unreachable/)
+    expect(violations.some(v => v.includes('window'))).toBe(false)
+  })
+
+  it('stop timing: rejects negative waitMin', () => {
+    const d = mkDelivery('d1', 'c1', 5, 0, 120)
+    const stop: RouteStop = { deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: -5, serviceStart: 15, departure: 25, status: 'pending' }
+    const violations = validateRoute(van, [stop], dMap(d))
+    expect(violations.some(v => v.includes('invalid stop timing'))).toBe(true)
+  })
+
+  it('stop timing: rejects serviceStart not equal to arrival + waitMin', () => {
+    const d = mkDelivery('d1', 'c1', 5, 0, 120)
+    const stop: RouteStop = { deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 10, serviceStart: 40, departure: 50, status: 'pending' }
+    const violations = validateRoute(van, [stop], dMap(d))
+    expect(violations.some(v => v.includes('invalid stop timing'))).toBe(true)
+  })
+
+  it('stop timing: rejects departure not equal to serviceStart + serviceMin', () => {
+    const d = mkDelivery('d1', 'c1', 5, 0, 120, 10)
+    const stop: RouteStop = { deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 50, status: 'pending' }
+    const violations = validateRoute(van, [stop], dMap(d))
+    expect(violations.some(v => v.includes('invalid stop timing'))).toBe(true)
+  })
+
+  it('travel matrix: rejects arrival not matching depot + shiftStart + travel time on first leg', () => {
+    const d = mkDelivery('d1', 'c1', 5, 0, 120)
+    const mat = mkMatrix({ depot: { c1: 20 }, c1: { depot: 20 } })
+    const stop: RouteStop = { deliveryId: 'd1', locationId: 'c1', arrival: 15, waitMin: 0, serviceStart: 15, departure: 25, status: 'pending' }
+    const violations = validateRoute(van, [stop], dMap(d), mat)
+    expect(violations.some(v => v.includes('invalid arrival time'))).toBe(true)
+  })
+
+  it('travel matrix: rejects arrival not matching preceding departure + travel time on second leg', () => {
+    const d1 = mkDelivery('d1', 'c1', 5, 0, 120)
+    const d2 = mkDelivery('d2', 'c2', 5, 0, 120)
+    const mat = mkMatrix({ depot: { c1: 20 }, c1: { c2: 15 }, c2: {} })
+    const stop1: RouteStop = { deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }
+    const stop2: RouteStop = { deliveryId: 'd2', locationId: 'c2', arrival: 55, waitMin: 0, serviceStart: 55, departure: 65, status: 'pending' }
+    const violations = validateRoute(van, [stop1, stop2], dMap(d1, d2), mat)
+    expect(violations.some(v => v.includes('invalid arrival time'))).toBe(true)
+  })
+
+  it('stop timing: rejects negative arrival time', () => {
+    const d = mkDelivery('d1', 'c1', 5, 0, 120)
+    const stop: RouteStop = { deliveryId: 'd1', locationId: 'c1', arrival: -10, waitMin: 0, serviceStart: -10, departure: 0, status: 'pending' }
+    const violations = validateRoute(van, [stop], dMap(d))
+    expect(violations.some(v => v.includes('invalid stop timing'))).toBe(true)
+  })
+
+  it('inconsistent stop status: rejects stop marked late when on-time within window', () => {
+    const d = mkDelivery('d1', 'c1', 5, 0, 120)
+    const stop: RouteStop = { deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'late' }
+    const violations = validateRoute(van, [stop], dMap(d))
+    expect(violations.some(v => v.includes('inconsistent stop status'))).toBe(true)
+  })
+
+  it('time window: rejects stop with serviceStart before window start', () => {
+    const d = mkDelivery('d1', 'c1', 5, 60, 120)
+    const stop: RouteStop = { deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }
+    const violations = validateRoute(van, [stop], dMap(d))
+    expect(violations.some(v => v.includes('misses time window'))).toBe(true)
+  })
+
+  it('matrix validation: unreachable leg cascades without duplicate or misleading arrival errors', () => {
+    const d1 = mkDelivery('d1', 'c1', 5, 0, 120)
+    const d2 = mkDelivery('d2', 'c2', 5, 0, 120)
+    const d3 = mkDelivery('d3', 'c3', 5, 0, 120)
+    const mat = mkMatrix({ depot: { c1: 20 }, c1: {}, c2: { c3: 10 } })
+    const stops = computeStops('depot', 0, ['d1', 'd2', 'd3'], dMap(d1, d2, d3), mat)
+    const violations = validateRoute(van, stops, dMap(d1, d2, d3), mat)
+    expect(violations).toHaveLength(2)
+    expect(violations.every(v => v.includes('unreachable'))).toBe(true)
+    expect(violations.some(v => v.includes('arrival'))).toBe(false)
     expect(violations.some(v => v.includes('window'))).toBe(false)
   })
 
@@ -325,5 +398,171 @@ describe('allocate', () => {
     const plan = allocate([v1, v2], [mkD('d1', 'c1', 10, 0, 200)], mat20)
     expect(plan.unassigned).toHaveLength(1)
     expect(plan.unassigned[0].reason).toBe('capacity')
+  })
+})
+
+describe('validatePlan', () => {
+  const mkV = (id: string, capacity: number, shiftEnd = 480, status: Vehicle['status'] = 'active'): Vehicle =>
+    ({ id, name: `Van ${id}`, capacity, depotId: 'depot', shiftStart: 0, shiftEnd, status })
+
+  const mkD = (id: string, loc: string, size: number, winStart: number, winEnd: number, priority: Delivery['priority'] = 'normal', serviceMin = 10): Delivery =>
+    ({ id, locationId: loc, size, serviceMin, window: { start: winStart, end: winEnd }, priority })
+
+  const mat20: TravelMatrix = {
+    depot: { depot: 0, c1: 20, c2: 20 },
+    c1:    { depot: 20, c1: 0, c2: 20 },
+    c2:    { depot: 20, c1: 20, c2: 0 },
+  }
+
+  it('valid plan passes validation with zero violations', () => {
+    const v = mkV('v1', 50)
+    const d = mkD('d1', 'c1', 10, 0, 120)
+    const plan = allocate([v], [d], mat20)
+    expect(validatePlan(plan, [v], [d])).toHaveLength(0)
+    expect(validatePlan([v], [d], plan)).toHaveLength(0)
+  })
+
+  it('detects missing delivery accounting when input delivery is omitted from plan', () => {
+    const v = mkV('v1', 50)
+    const d1 = mkD('d1', 'c1', 10, 0, 120)
+    const d2 = mkD('d2', 'c2', 10, 0, 120)
+    const plan: DeliveryPlan = {
+      id: 'p-missing',
+      label: 'Missing delivery',
+      createdAt: 0,
+      routes: [{
+        vehicleId: 'v1',
+        stops: [{ deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }],
+        load: 10,
+      }],
+      unassigned: [],
+    }
+    const violations = validatePlan(plan, [v], [d1, d2])
+    expect(violations.some(v => v.includes('missing delivery accounting'))).toBe(true)
+    expect(violations.some(v => v.includes('d2'))).toBe(true)
+  })
+
+  it('detects duplicate delivery accounting across routes', () => {
+    const v1 = mkV('v1', 50)
+    const v2 = mkV('v2', 50)
+    const d1 = mkD('d1', 'c1', 10, 0, 120)
+    const plan: DeliveryPlan = {
+      id: 'p-dup-routes',
+      label: 'Duplicate routes',
+      createdAt: 0,
+      routes: [
+        {
+          vehicleId: 'v1',
+          stops: [{ deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }],
+          load: 10,
+        },
+        {
+          vehicleId: 'v2',
+          stops: [{ deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }],
+          load: 10,
+        },
+      ],
+      unassigned: [],
+    }
+    const violations = validatePlan(plan, [v1, v2], [d1])
+    expect(violations.some(v => v.includes('duplicate delivery accounting'))).toBe(true)
+  })
+
+  it('detects duplicate delivery accounting between routes and unassigned', () => {
+    const v = mkV('v1', 50)
+    const d1 = mkD('d1', 'c1', 10, 0, 120)
+    const plan: DeliveryPlan = {
+      id: 'p-dup-unassigned',
+      label: 'Duplicate in unassigned',
+      createdAt: 0,
+      routes: [{
+        vehicleId: 'v1',
+        stops: [{ deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }],
+        load: 10,
+      }],
+      unassigned: [{ deliveryId: 'd1', reason: 'capacity', detail: 'test' }],
+    }
+    const violations = validatePlan(plan, [v], [d1])
+    expect(violations.some(v => v.includes('duplicate delivery accounting'))).toBe(true)
+  })
+
+  it('detects assignment to failed vehicles', () => {
+    const failedV = mkV('v1', 50, 480, 'failed')
+    const d1 = mkD('d1', 'c1', 10, 0, 120)
+    const plan: DeliveryPlan = {
+      id: 'p-failed-v',
+      label: 'Assigned to failed vehicle',
+      createdAt: 0,
+      routes: [{
+        vehicleId: 'v1',
+        stops: [{ deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }],
+        load: 10,
+      }],
+      unassigned: [],
+    }
+    const violations = validatePlan(plan, [failedV], [d1])
+    expect(violations.some(v => v.includes('assigned to failed vehicle'))).toBe(true)
+  })
+
+  it('detects unknown vehicle and delivery IDs', () => {
+    const v = mkV('v1', 50)
+    const d1 = mkD('d1', 'c1', 10, 0, 120)
+    const plan: DeliveryPlan = {
+      id: 'p-unknown',
+      label: 'Unknown IDs',
+      createdAt: 0,
+      routes: [{
+        vehicleId: 'unknown_v',
+        stops: [{ deliveryId: 'ghost_d', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }],
+        load: 10,
+      }],
+      unassigned: [{ deliveryId: 'ghost_u', reason: 'capacity', detail: 'test' }],
+    }
+    const violations = validatePlan(plan, [v], [d1])
+    expect(violations.some(v => v.includes('unknown vehicle'))).toBe(true)
+    expect(violations.some(v => v.includes('unknown delivery'))).toBe(true)
+  })
+
+  it('allocate rejects invalid generated plans explicitly', () => {
+    const v = mkV('v1', 50)
+    const d1 = mkD('d1', 'c1', 10, 0, 120)
+    const d1Dup = mkD('d1', 'c1', 10, 0, 120)
+    expect(() => allocate([v], [d1, d1Dup], mat20)).toThrow(/Generated plan is invalid/i)
+  })
+
+  it('detects duplicate vehicle IDs in input', () => {
+    const v1 = mkV('v1', 50)
+    const v1Dup = mkV('v1', 40)
+    const d = mkD('d1', 'c1', 10, 0, 120)
+    const plan = allocate([v1], [d], mat20)
+    const violations = validatePlan(plan, [v1, v1Dup], [d])
+    expect(violations.some(v => v.includes('duplicate vehicle ID in input'))).toBe(true)
+  })
+
+  it('detects duplicate delivery IDs in input', () => {
+    const v = mkV('v1', 50)
+    const d1 = mkD('d1', 'c1', 10, 0, 120)
+    const d1Dup = mkD('d1', 'c2', 15, 0, 120)
+    const plan = allocate([v], [d1], mat20)
+    const violations = validatePlan(plan, [v], [d1, d1Dup])
+    expect(violations.some(v => v.includes('duplicate delivery ID in input'))).toBe(true)
+  })
+
+  it('detects mismatched route load against sum of delivery sizes', () => {
+    const v = mkV('v1', 50)
+    const d1 = mkD('d1', 'c1', 10, 0, 120)
+    const plan: DeliveryPlan = {
+      id: 'p-load-mismatch',
+      label: 'Mismatched load',
+      createdAt: 0,
+      routes: [{
+        vehicleId: 'v1',
+        stops: [{ deliveryId: 'd1', locationId: 'c1', arrival: 20, waitMin: 0, serviceStart: 20, departure: 30, status: 'pending' }],
+        load: 25,
+      }],
+      unassigned: [],
+    }
+    const violations = validatePlan(plan, [v], [d1])
+    expect(violations.some(v => v.includes('mismatched route load'))).toBe(true)
   })
 })

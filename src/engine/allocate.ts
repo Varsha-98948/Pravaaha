@@ -1,5 +1,5 @@
 import type { Delivery, DeliveryPlan, TravelMatrix, Vehicle, VehicleRoute, UnassignedDelivery } from '../types'
-import { computeStops, validateRoute } from './schedule'
+import { computeStops, validatePlan, validateRoute } from './schedule'
 
 /**
  * Deterministic greedy allocator.
@@ -45,7 +45,7 @@ export function allocate(
     for (const v of active) {
       const candidateIds = [...assigned.get(v.id)!, d.id]
       const stops = computeStops(v.depotId, v.shiftStart, candidateIds, dMap, matrix)
-      const violations = validateRoute(v, stops, dMap)
+      const violations = validateRoute(v, stops, dMap, matrix)
 
       if (violations.length === 0) {
         const end = stops[stops.length - 1].departure
@@ -94,5 +94,13 @@ export function allocate(
     return { vehicleId: v.id, stops, load }
   })
 
-  return { id: `plan-${label}`, label, createdAt: 0, routes, unassigned }
+  const plan: DeliveryPlan = { id: `plan-${label}`, label, createdAt: 0, routes, unassigned }
+  const violations = validatePlan(plan, vehicles, deliveries, matrix)
+  if (violations.length > 0) {
+    throw new Error(`Generated plan is invalid: ${violations.join('; ')}`)
+  }
+
+  return plan
 }
+
+export { validatePlan }
