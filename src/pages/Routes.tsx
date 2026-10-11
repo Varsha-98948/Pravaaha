@@ -1,0 +1,4 @@
+import { Card, PageHead, Badge } from '../components/ui'
+import { originalPlan, vehicles, locName } from '../data/demo'
+import { fmtTime } from '../utils/time'
+export default function Routes() { return <><PageHead title="Route plan" sub={originalPlan.label} /><div className="grid gap-4 lg:grid-cols-3">{originalPlan.routes.map(r => { const v = vehicles.find(x => x.id === r.vehicleId)!; return <Card key={r.vehicleId} title={v.name} action={<Badge t="mute">{r.load}/{v.capacity} load</Badge>}><ol className="space-y-3 border-l-2 border-teal/40 pl-4">{r.stops.map(s => <li key={s.deliveryId}><div className="font-medium">{fmtTime(s.serviceStart)} {locName(s.locationId)}</div><div className="text-xs text-slate-500">Arrive {fmtTime(s.arrival)}{s.waitMin > 0 && ` · waits ${s.waitMin} min`} · leave {fmtTime(s.departure)}</div></li>)}{r.stops.length === 0 && <li className="text-sm text-slate-500">No stops</li>}</ol></Card> })}</div></> }

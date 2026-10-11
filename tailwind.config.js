@@ -1,0 +1,1 @@
+export default { content: ['./index.html','./src/**/*.{ts,tsx}'], theme: { extend: { fontFamily: { sans: ['"IBM Plex Sans"','system-ui','sans-serif'] }, colors: { navy: '#0F2133', teal: { DEFAULT: '#0E8A7D', soft: '#E3F3F0' }, bg: '#F3F5F4' } } } }
