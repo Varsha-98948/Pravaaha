@@ -63,6 +63,14 @@ export interface TimedClosure {
   originalBackward: Minutes
 }
 
+export interface TimedVehicleFailure {
+  /** Matches the originating VehicleFailureEvent.id; used for deduplication. */
+  eventId: string
+  vehicleId: string
+  /** Half-open interval start: failure is active for now >= at. */
+  at: Minutes
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // World
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,6 +104,11 @@ export interface World {
    * the exact fallback behaviour.
    */
   locations?: Location[]
+  /**
+   * Registered vehicle failures with failure timestamp. Preserves breakdown time
+   * so replanning accurately identifies stops completed before breakdown.
+   */
+  vehicleFailures?: TimedVehicleFailure[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -382,8 +395,8 @@ function validateUrgentDeliveryEvent(e: UrgentDeliveryEvent, world: World): void
     throw new DisruptionValidationError(e.id, e.type, `delivery.serviceMin must be >= 0, got ${d.serviceMin}`)
   if (!d.window || !isValidWindow(d.window))
     throw new DisruptionValidationError(e.id, e.type, `delivery.window invalid: ${JSON.stringify(d.window)}`)
-  if (d.priority !== 'urgent')
-    throw new DisruptionValidationError(e.id, e.type, `delivery.priority must be 'urgent', got '${d.priority}'`)
+  if (d.priority !== undefined && d.priority !== 'urgent' && d.priority !== 'normal')
+    throw new DisruptionValidationError(e.id, e.type, `delivery.priority invalid: '${d.priority}'`)
 }
 
 /**
@@ -645,12 +658,32 @@ export function applyDisruption(w: World, e: DisruptionEvent): World {
   switch (e.type) {
     case 'vehicle_failure': {
       const v = w.vehicles.find((x) => x.id === e.vehicleId)
-      if (v?.status === 'failed') return w
+      const failures = w.vehicleFailures ?? []
+      const existing = failures.find((f) => f.eventId === e.id)
+      if (existing !== undefined) {
+        if (existing.vehicleId !== e.vehicleId || existing.at !== e.at) {
+          throw new DisruptionValidationError(
+            e.id,
+            e.type,
+            `Event id '${e.id}' already registered with conflicting data`,
+          )
+        }
+        return w
+      }
+      if (v?.status === 'failed' && failures.some((f) => f.vehicleId === e.vehicleId && f.at === e.at)) {
+        return w
+      }
+      const newFailure: TimedVehicleFailure = {
+        eventId: e.id,
+        vehicleId: e.vehicleId,
+        at: e.at,
+      }
       return {
         ...w,
-        vehicles: w.vehicles.map((v) =>
-          v.id === e.vehicleId ? { ...v, status: 'failed' } : v,
+        vehicles: w.vehicles.map((veh) =>
+          veh.id === e.vehicleId ? { ...veh, status: 'failed' as const, failedAt: e.at } : veh,
         ),
+        vehicleFailures: [...failures, newFailure],
       }
     }
 

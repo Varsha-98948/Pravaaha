@@ -28,6 +28,18 @@ function isLegBlockedByClosure(
  * - Remaining / affected deliveries are greedily reassigned across active vehicles (urgent first, earliest window).
  * - Road closures active at `now` are respected via buildMatrixAt(world, now).
  * - Capacity, shift windows, and customer time windows are strictly validated; violations result in explicit unassigned records.
+ *
+ * Contract Limitation Note:
+ * - RouteStop.status in src/types/index.ts is constrained to 'pending' | 'completed' | 'late' | 'skipped'.
+ * - UnassignedReason is constrained to 'capacity' | 'time_window' | 'no_vehicle' | 'unreachable' | 'not_implemented'.
+ * - The contract does not have an 'interrupted' or 'stranded' status. Therefore:
+ *   1. Interrupted deliveries (vehicle broke down during travel or service) cannot remain on the failed vehicle
+ *      with a custom status without violating StopStatus contracts.
+ *   2. Instead, failed vehicles retain only genuinely completed stops (departure <= failedAt).
+ *   3. All interrupted and remaining deliveries are released into the candidate pool for reassignment.
+ *   4. If an interrupted delivery cannot be reassigned (e.g. no active vehicles remain or capacity is full),
+ *      it is explicitly recorded in `unassigned` using supported reasons ('no_vehicle', 'capacity', or 'time_window')
+ *      so that no delivery is silently lost or falsely completed.
  */
 export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): DeliveryPlan {
   const simNow = Math.max(0, Number.isFinite(now) ? now : 0)
@@ -36,6 +48,22 @@ export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): D
   const deliveriesMap = new Map<string, Delivery>(world.deliveries.map((d) => [d.id, d]))
   const vehiclesMap = new Map<string, Vehicle>(world.vehicles.map((v) => [v.id, v]))
   const closures = world.activeClosures
+
+  // Track failure times for failed vehicles
+  const failureTimes = new Map<string, Minutes>()
+  if (world.vehicleFailures) {
+    for (const f of world.vehicleFailures) {
+      const existing = failureTimes.get(f.vehicleId)
+      if (existing === undefined || f.at < existing) {
+        failureTimes.set(f.vehicleId, f.at)
+      }
+    }
+  }
+  for (const v of world.vehicles) {
+    if ((v as { failedAt?: Minutes }).failedAt !== undefined && !failureTimes.has(v.id)) {
+      failureTimes.set(v.id, (v as { failedAt?: Minutes }).failedAt!)
+    }
+  }
 
   // 1. Identify committed/fixed stops for each vehicle
   const committedStopsMap = new Map<string, RouteStop[]>()
@@ -49,17 +77,21 @@ export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): D
     const vehicle = vehiclesMap.get(route.vehicleId)
     if (!vehicle) continue
 
+    const isFailed = vehicle.status === 'failed'
+    const failedAt = failureTimes.get(vehicle.id)
+    const cutoff = isFailed && failedAt !== undefined ? Math.min(simNow, failedAt) : simNow
+
     const committed: RouteStop[] = []
 
     for (let i = 0; i < route.stops.length; i++) {
       const stop = route.stops[i]
       const roadEntry: Minutes = i === 0 ? vehicle.shiftStart : route.stops[i - 1].departure
 
-      if (stop.departure <= simNow) {
-        // Stop is already completed in the past
+      if (stop.departure <= cutoff) {
+        // Stop was genuinely completed before vehicle failure and before simNow
         committed.push({ ...stop, status: 'completed' })
         committedDeliveryIds.add(stop.deliveryId)
-      } else if (vehicle.status === 'active' && roadEntry <= simNow) {
+      } else if (!isFailed && roadEntry <= simNow) {
         // Active vehicle with work in progress at simNow
         const fromLoc = i === 0 ? vehicle.depotId : route.stops[i - 1].locationId
         const toLoc = stop.locationId
@@ -76,7 +108,7 @@ export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): D
           break
         }
       } else {
-        // Stop is in the future or vehicle is failed: cannot be completed under current assignment
+        // Stop is in the future, or vehicle is failed and stop departure is after failure cutoff
         break
       }
     }
@@ -121,7 +153,7 @@ export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): D
     }
 
     let best: { vehicle: Vehicle; end: number } | null = null
-    const failureReasons: string[] = []
+    const perVehicleFailures: Array<{ vehicle: Vehicle; reasons: string[] }> = []
 
     for (const v of activeVehicles) {
       const committed = committedStopsMap.get(v.id) ?? []
@@ -133,18 +165,32 @@ export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): D
 
       const newStops = computeStops(startLoc, startTime, testNewIds, deliveriesMap, matrix)
       const allStops = [...committed, ...newStops]
-      const bad = validateRoute(v, allStops, deliveriesMap)
+      const rawBad = validateRoute(v, allStops, deliveriesMap)
 
-      // Explicit check for closed-road legs in new stops
+      // Filter out time-window errors that belong to already-committed stops,
+      // so a prior/in-progress late stop does not disqualify the vehicle from valid future work.
+      const bad = rawBad.filter((err) => {
+        for (const cs of committed) {
+          if (err === `${cs.deliveryId}: misses time window`) {
+            return false
+          }
+        }
+        return true
+      })
+
+      // Explicit check for closed-road legs in new stops (both current and future scheduled closures)
       let usesClosedRoad = false
       let prevLoc = startLoc
+      let legDepartureTime = startTime
       for (const ns of newStops) {
         const travelMin = matrix[prevLoc]?.[ns.locationId]
-        if (travelMin === undefined || travelMin >= CLOSED_MIN || !Number.isFinite(travelMin)) {
+        const blockedByClosure = isLegBlockedByClosure(prevLoc, ns.locationId, legDepartureTime, closures)
+        if (travelMin === undefined || travelMin >= CLOSED_MIN || !Number.isFinite(travelMin) || blockedByClosure) {
           usesClosedRoad = true
           break
         }
         prevLoc = ns.locationId
+        legDepartureTime = ns.departure
       }
       if (usesClosedRoad) {
         bad.push(`${d.id}: road closed`)
@@ -156,38 +202,61 @@ export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): D
           best = { vehicle: v, end }
         }
       } else {
-        failureReasons.push(...bad)
+        perVehicleFailures.push({ vehicle: v, reasons: bad })
       }
     }
 
     if (best !== null) {
       assignedNewIds.get(best.vehicle.id)!.push(d.id)
     } else {
-      // Determine truthful unassigned reason
-      if (failureReasons.some((r) => r.includes('road closed') || r.includes('unreachable'))) {
+      // Determine truthful unassigned reason across active vehicles
+      const allUnreachable =
+        perVehicleFailures.length > 0 &&
+        perVehicleFailures.every((f) =>
+          f.reasons.some((r) => r.includes('road closed') || r.includes('unreachable')),
+        )
+
+      if (allUnreachable) {
         unassigned.push({
           deliveryId: d.id,
           reason: 'unreachable',
           detail: 'Destination unreachable or road is closed',
         })
-      } else if (failureReasons.every((r) => r.includes('capacity'))) {
-        unassigned.push({
-          deliveryId: d.id,
-          reason: 'capacity',
-          detail: 'Remaining vehicle capacity is too small',
-        })
-      } else if (failureReasons.some((r) => r.includes('time window') || r.includes('shift overrun'))) {
-        unassigned.push({
-          deliveryId: d.id,
-          reason: 'time_window',
-          detail: 'No vehicle can arrive within the delivery window or shift',
-        })
       } else {
-        unassigned.push({
-          deliveryId: d.id,
-          reason: 'time_window',
-          detail: 'Cannot be scheduled without constraint violations',
-        })
+        // Among vehicles where road was open:
+        const accessible = perVehicleFailures.filter(
+          (f) => !f.reasons.some((r) => r.includes('road closed') || r.includes('unreachable')),
+        )
+        const capacityFailed = accessible.filter((f) => f.reasons.some((r) => r.includes('capacity')))
+        const timeFailed = accessible.filter((f) =>
+          f.reasons.some((r) => r.includes('time window') || r.includes('shift overrun')),
+        )
+
+        if (capacityFailed.length > 0 && timeFailed.length === 0) {
+          unassigned.push({
+            deliveryId: d.id,
+            reason: 'capacity',
+            detail: 'Remaining vehicle capacity is too small',
+          })
+        } else if (timeFailed.length > 0 && capacityFailed.length === 0) {
+          unassigned.push({
+            deliveryId: d.id,
+            reason: 'time_window',
+            detail: 'No vehicle can arrive within the delivery window or shift',
+          })
+        } else if (capacityFailed.length > 0) {
+          unassigned.push({
+            deliveryId: d.id,
+            reason: 'capacity',
+            detail: 'Remaining vehicle capacity is too small',
+          })
+        } else {
+          unassigned.push({
+            deliveryId: d.id,
+            reason: 'time_window',
+            detail: 'Cannot be scheduled without constraint violations',
+          })
+        }
       }
     }
   }

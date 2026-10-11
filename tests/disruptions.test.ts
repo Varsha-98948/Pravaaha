@@ -391,5 +391,34 @@ describe('Disruptions Engine', () => {
       expect(updatedWorld.deliveries.length).toBe(demoDeliveries.length + 1)
       expect(updatedWorld.deliveries.find(d => d.id === 'demo-urgent-1')).toBeDefined()
     })
+
+    it('accepts urgent delivery event with normal priority payload and normalizes priority to urgent', () => {
+      const urgentNormal: UrgentDeliveryEvent = {
+        type: 'urgent_delivery',
+        id: 'evt-norm-pri',
+        at: 10,
+        delivery: {
+          id: 'd-norm-pri',
+          locationId: 'c1',
+          size: 5,
+          serviceMin: 10,
+          window: { start: 20, end: 120 },
+          priority: 'normal',
+        },
+      }
+
+      // Must not throw validation error
+      expect(() => validateDisruptionEvent(urgentNormal, baseWorld)).not.toThrow()
+
+      // validateUrgentDelivery must normalize priority to 'urgent'
+      const effect = validateUrgentDelivery(urgentNormal, baseWorld)
+      expect(effect.delivery.priority).toBe('urgent')
+
+      // applyDisruption must normalize priority to 'urgent' in world.deliveries
+      const nextWorld = applyDisruption(baseWorld, urgentNormal)
+      const added = nextWorld.deliveries.find((d) => d.id === 'd-norm-pri')
+      expect(added).toBeDefined()
+      expect(added?.priority).toBe('urgent')
+    })
   })
 })
