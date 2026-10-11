@@ -19,6 +19,10 @@ export default function Fleet({ profile = null }: { profile?: UserProfile | null
   const [depotId, setDepotId] = useState('')
   const [shiftStart, setShiftStart] = useState('0')
   const [shiftEnd, setShiftEnd] = useState('480')
+  const [vehicleSearch, setVehicleSearch] = useState('')
+  const [vehicleStatusFilter, setVehicleStatusFilter] = useState<'all' | 'active' | 'failed'>('all')
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
+  const [locationKindFilter, setLocationKindFilter] = useState<'all' | 'depot' | 'customer'>('all')
   const canWrite = !isDemoMode && (profile?.role === 'admin' || profile?.role === 'dispatcher')
 
   const load = useCallback(async (): Promise<boolean> => {
@@ -132,10 +136,26 @@ export default function Fleet({ profile = null }: { profile?: UserProfile | null
   const depotName = (id: string) => locationNames.get(id) ?? id
   const depots = locations.filter(location => location.kind === 'depot')
 
+  const filteredLocations = locations.filter(loc => {
+    return locationKindFilter === 'all' || loc.kind === locationKindFilter
+  })
+
+  const filteredVehicles = (vehicles ?? []).filter(v => {
+    const matchesSearch = !vehicleSearch ||
+      v.name.toLowerCase().includes(vehicleSearch.toLowerCase()) ||
+      v.id.toLowerCase().includes(vehicleSearch.toLowerCase())
+    const matchesStatus = vehicleStatusFilter === 'all' || v.status === vehicleStatusFilter
+    return matchesSearch && matchesStatus
+  })
+
+  const selectedVehicle = selectedVehicleId
+    ? vehicles?.find(v => v.id === selectedVehicleId) ?? null
+    : null
+
   return <>
     <PageHead title="Fleet" sub={isDemoMode ? 'Sample vehicles, capacity and shifts (demo mode)' : 'Vehicles and locations in your organization'} />
     <div className="mb-4 flex justify-end">
-      <button type="button" onClick={() => void load()} disabled={loading || saving !== ''} className="rounded border border-slate-300 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50">Refresh</button>
+      <button type="button" onClick={() => void load()} disabled={loading || saving !== ''} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors">Refresh</button>
     </div>
 
     {formError && <State kind="error" text={formError} />}
@@ -153,7 +173,7 @@ export default function Fleet({ profile = null }: { profile?: UserProfile | null
                 <option value="depot">Depot</option><option value="customer">Customer</option>
               </select>
             </label>
-            <button type="submit" disabled={saving !== '' || loading} className="rounded bg-navy px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{saving === 'location' ? 'Saving…' : 'Create location'}</button>
+            <button type="submit" disabled={saving !== '' || loading} className="rounded-lg bg-[#243607] hover:bg-[#182404] px-4 py-2 text-sm font-medium text-white shadow-sm transition-all disabled:opacity-50">{saving === 'location' ? 'Saving…' : 'Create location'}</button>
           </form>
         </Card>
 
@@ -176,7 +196,7 @@ export default function Fleet({ profile = null }: { profile?: UserProfile | null
             <label className="text-xs text-slate-600">Shift ends (minutes)
               <input type="number" required step="1" value={shiftEnd} onChange={event => setShiftEnd(event.target.value)} className="mt-1 w-full rounded border border-slate-300 p-2 text-sm" />
             </label>
-            <button type="submit" disabled={saving !== '' || loading || depots.length === 0} className="self-end rounded bg-navy px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{saving === 'vehicle' ? 'Saving…' : 'Create vehicle'}</button>
+            <button type="submit" disabled={saving !== '' || loading || depots.length === 0} className="self-end rounded-lg bg-[#243607] hover:bg-[#182404] px-4 py-2 text-sm font-medium text-white shadow-sm transition-all disabled:opacity-50">{saving === 'vehicle' ? 'Saving…' : 'Create vehicle'}</button>
             {depots.length === 0 && <p className="text-xs text-amber-800 sm:col-span-2">Create a depot location first; vehicles must reference a depot in this organization.</p>}
           </form>
         </Card>
@@ -187,22 +207,133 @@ export default function Fleet({ profile = null }: { profile?: UserProfile | null
       <MetricCard label="Active vehicles" value={vehicles.filter(vehicle => vehicle.status === 'active').length} sub="Available fleet" />
       <MetricCard label="Locations" value={locations.length} sub="Depots and customers" />
     </div>}
+
+    {/* Vehicle Inspector Card */}
+    {selectedVehicle && (
+      <div className="mb-4">
+        <Card
+          title={
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-sm">Vehicle Inspection: {selectedVehicle.name}</span>
+              <Badge t={selectedVehicle.status === 'active' ? 'ok' : 'bad'}>{selectedVehicle.status}</Badge>
+            </div>
+          }
+          action={
+            <button
+              type="button"
+              onClick={() => setSelectedVehicleId(null)}
+              className="text-xs text-[#30280D]/60 hover:text-[#30280D]"
+            >
+              Close
+            </button>
+          }
+        >
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 text-xs">
+            <div>
+              <span className="text-[#30280D]/60 block font-medium">Identifier:</span>
+              <span className="font-mono text-sm text-[#30280D]">{selectedVehicle.id}</span>
+            </div>
+            <div>
+              <span className="text-[#30280D]/60 block font-medium">Capacity:</span>
+              <span className="font-semibold text-sm text-[#30280D]">{selectedVehicle.capacity} units</span>
+            </div>
+            <div>
+              <span className="text-[#30280D]/60 block font-medium">Home Depot:</span>
+              <span className="font-semibold text-sm text-[#30280D]">{depotName(selectedVehicle.depotId)}</span>
+            </div>
+            <div>
+              <span className="text-[#30280D]/60 block font-medium">Shift Window:</span>
+              <span className="font-semibold text-sm text-[#30280D]">{selectedVehicle.shiftStart}m – {selectedVehicle.shiftEnd}m</span>
+            </div>
+          </div>
+        </Card>
+      </div>
+    )}
+
     <div className="grid gap-4 lg:grid-cols-2">
-      <Card title={isDemoMode ? 'Sample locations' : 'Organization locations'}>
+      <Card
+        title={isDemoMode ? 'Sample locations' : 'Organization locations'}
+        sub={`${filteredLocations.length} locations`}
+        action={
+          <div className="flex items-center gap-1 text-xs">
+            {(['all', 'depot', 'customer'] as const).map(k => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setLocationKindFilter(k)}
+                className={`rounded px-2 py-0.5 text-xs font-medium transition-all ${
+                  locationKindFilter === k
+                    ? 'bg-[#243607] text-white shadow-sm'
+                    : 'bg-[#BBBEA7]/20 text-[#30280D]/75 hover:bg-[#BBBEA7]/35'
+                }`}
+              >
+                {k}
+              </button>
+            ))}
+          </div>
+        }
+      >
         {loading ? <State kind="loading" text="Loading organization locations…" />
           : error ? <State kind="error" text={error} />
             : locations.length === 0 ? <State kind="empty" text="No locations are registered. Create a depot before adding vehicles, and customer locations before adding deliveries." />
-              : <Table head={['Name', 'Kind']} rows={locations.map(location => [location.name, <Badge key={`${location.id}-kind`} t={location.kind === 'depot' ? 'ok' : 'mute'}>{location.kind}</Badge>])} />}
+              : <Table head={['Name', 'Kind']} rows={filteredLocations.map(location => [location.name, <Badge key={`${location.id}-kind`} t={location.kind === 'depot' ? 'ok' : 'mute'}>{location.kind}</Badge>])} />}
       </Card>
-      <Card title={isDemoMode ? 'Sample fleet' : 'Organization fleet'}>
+
+      <Card
+        title={isDemoMode ? 'Sample fleet' : 'Organization fleet'}
+        sub={`${filteredVehicles.length} vehicles`}
+        action={
+          <div className="flex flex-wrap items-center gap-1.5">
+            <input
+              type="text"
+              placeholder="Search vehicles…"
+              value={vehicleSearch}
+              onChange={e => setVehicleSearch(e.target.value)}
+              className="rounded border border-[#30280D]/15 bg-white px-2 py-0.5 text-xs text-[#30280D] placeholder-[#30280D]/40 focus:border-[#243607] focus:outline-none"
+            />
+            {(['all', 'active', 'failed'] as const).map(s => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setVehicleStatusFilter(s)}
+                className={`rounded px-1.5 py-0.5 text-[11px] font-medium transition-all ${
+                  vehicleStatusFilter === s
+                    ? 'bg-[#243607] text-white shadow-sm'
+                    : 'bg-[#BBBEA7]/20 text-[#30280D]/75 hover:bg-[#BBBEA7]/35'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        }
+      >
         {loading ? <State kind="loading" text="Loading vehicles from your organization…" />
           : error ? <State kind="error" text={error} />
             : vehicles === null ? <State kind="error" text="Fleet data is unavailable. Refresh to try again." />
-              : vehicles.length === 0 ? <State kind="empty" text="No vehicles are registered for this organization yet." />
-                : <Table head={['Vehicle', 'Capacity', 'Depot', 'Shift', 'Status']} rows={vehicles.map(vehicle => [
-                  vehicle.name, vehicle.capacity, depotName(vehicle.depotId), `${vehicle.shiftStart}–${vehicle.shiftEnd} min`,
-                  <Badge key={`${vehicle.id}-status`} t={vehicle.status === 'active' ? 'ok' : 'bad'}>{vehicle.status}</Badge>,
-                ])} />}
+              : filteredVehicles.length === 0 ? <State kind="empty" text={vehicles.length === 0 ? "No vehicles are registered for this organization yet." : "No vehicles match your active filter."} />
+                : <Table head={['Vehicle', 'Capacity', 'Depot', 'Shift', 'Status', 'Action']} rows={filteredVehicles.map(vehicle => {
+                  const isSelected = selectedVehicleId === vehicle.id
+                  return [
+                    vehicle.name,
+                    vehicle.capacity,
+                    depotName(vehicle.depotId),
+                    `${vehicle.shiftStart}–${vehicle.shiftEnd} min`,
+                    <Badge key={`${vehicle.id}-status`} t={vehicle.status === 'active' ? 'ok' : 'bad'}>{vehicle.status}</Badge>,
+                    <button
+                      key={`${vehicle.id}-action`}
+                      type="button"
+                      onClick={() => setSelectedVehicleId(isSelected ? null : vehicle.id)}
+                      className={`rounded px-2 py-0.5 text-xs font-medium transition-all ${
+                        isSelected
+                          ? 'bg-[#243607] text-white'
+                          : 'bg-[#BBBEA7]/25 text-[#30280D] hover:bg-[#BBBEA7]/40'
+                      }`}
+                    >
+                      {isSelected ? 'Inspecting' : 'Inspect'}
+                    </button>
+                  ]
+                })} />}
       </Card>
     </div>
   </>
