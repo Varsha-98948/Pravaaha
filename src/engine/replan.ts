@@ -1,4 +1,4 @@
-import type { Delivery, DeliveryPlan, Minutes, RouteStop, UnassignedDelivery, Vehicle, VehicleRoute } from '../types'
+import type { Delivery, DeliveryPlan, Minutes, RouteStop, UnassignedDelivery, UnassignedReason, Vehicle, VehicleRoute } from '../types'
 import { buildMatrixAt, CLOSED_MIN, type TimedClosure, type World } from './disruptions'
 import { computeStops, validateRoute } from './schedule'
 
@@ -31,7 +31,7 @@ function isLegBlockedByClosure(
  *
  * Contract Limitation Note:
  * - RouteStop.status in src/types/index.ts is constrained to 'pending' | 'completed' | 'late' | 'skipped'.
- * - UnassignedReason is constrained to 'capacity' | 'time_window' | 'no_vehicle' | 'unreachable' | 'not_implemented'.
+ * - UnassignedReason is constrained to 'capacity' | 'time_window' | 'no_vehicle' | 'unreachable'.
  * - The contract does not have an 'interrupted' or 'stranded' status. Therefore:
  *   1. Interrupted deliveries (vehicle broke down during travel or service) cannot remain on the failed vehicle
  *      with a custom status without violating StopStatus contracts.
@@ -165,18 +165,27 @@ export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): D
 
       const newStops = computeStops(startLoc, startTime, testNewIds, deliveriesMap, matrix)
       const allStops = [...committed, ...newStops]
-      const rawBad = validateRoute(v, allStops, deliveriesMap)
+      const effectiveV: Vehicle = {
+        ...v,
+        depotId: startLoc,
+        shiftStart: startTime,
+      }
+      const rawBadAll = validateRoute(v, allStops, deliveriesMap)
+      const rawBadNew = validateRoute(effectiveV, newStops, deliveriesMap, matrix)
 
-      // Filter out time-window errors that belong to already-committed stops,
-      // so a prior/in-progress late stop does not disqualify the vehicle from valid future work.
-      const bad = rawBad.filter((err) => {
-        for (const cs of committed) {
-          if (err === `${cs.deliveryId}: misses time window`) {
-            return false
+      // Filter out errors that belong to already-committed stops,
+      // so a prior/in-progress stop does not disqualify the vehicle from valid future work.
+      const bad = [
+        ...rawBadAll.filter((err) => {
+          for (const cs of committed) {
+            if (err === `${cs.deliveryId}: misses time window`) {
+              return false
+            }
           }
-        }
-        return true
-      })
+          return true
+        }),
+        ...rawBadNew.filter((err) => !err.includes('exceeds capacity')),
+      ]
 
       // Explicit check for closed-road legs in new stops (both current and future scheduled closures)
       let usesClosedRoad = false
@@ -209,55 +218,42 @@ export function replan(world: World, currentPlan: DeliveryPlan, now: Minutes): D
     if (best !== null) {
       assignedNewIds.get(best.vehicle.id)!.push(d.id)
     } else {
-      // Determine truthful unassigned reason across active vehicles
+      // Classify blockers across all active vehicles (same as allocate.ts):
+      // unreachable when all vehicles are blocked by unreachable routes;
+      // capacity when capacity is the only blocking constraint;
+      // otherwise time_window for time-window/shift failures or mixed constraints.
       const allUnreachable =
-        perVehicleFailures.length > 0 &&
-        perVehicleFailures.every((f) =>
-          f.reasons.some((r) => r.includes('road closed') || r.includes('unreachable')),
-        )
-
-      if (allUnreachable) {
-        unassigned.push({
-          deliveryId: d.id,
-          reason: 'unreachable',
-          detail: 'Destination unreachable or road is closed',
+        activeVehicles.length > 0 &&
+        activeVehicles.every((v) => {
+          const f = perVehicleFailures.find((x) => x.vehicle.id === v.id)
+          return f?.reasons.some((r) => r.includes('road closed') || r.includes('unreachable'))
         })
-      } else {
-        // Among vehicles where road was open:
-        const accessible = perVehicleFailures.filter(
-          (f) => !f.reasons.some((r) => r.includes('road closed') || r.includes('unreachable')),
-        )
-        const capacityFailed = accessible.filter((f) => f.reasons.some((r) => r.includes('capacity')))
-        const timeFailed = accessible.filter((f) =>
-          f.reasons.some((r) => r.includes('time window') || r.includes('shift overrun')),
-        )
+      const hasCapacity = perVehicleFailures.some((f) => f.reasons.some((r) => r.includes('capacity')))
+      const hasUnreachable = perVehicleFailures.some((f) =>
+        f.reasons.some((r) => r.includes('road closed') || r.includes('unreachable')),
+      )
+      const hasWindow = perVehicleFailures.some((f) =>
+        f.reasons.some(
+          (r) =>
+            r.includes('time window') ||
+            r.includes('shift overrun') ||
+            r.includes('invalid arrival time') ||
+            r.includes('invalid stop timing'),
+        ),
+      )
 
-        if (capacityFailed.length > 0 && timeFailed.length === 0) {
-          unassigned.push({
-            deliveryId: d.id,
-            reason: 'capacity',
-            detail: 'Remaining vehicle capacity is too small',
-          })
-        } else if (timeFailed.length > 0 && capacityFailed.length === 0) {
-          unassigned.push({
-            deliveryId: d.id,
-            reason: 'time_window',
-            detail: 'No vehicle can arrive within the delivery window or shift',
-          })
-        } else if (capacityFailed.length > 0) {
-          unassigned.push({
-            deliveryId: d.id,
-            reason: 'capacity',
-            detail: 'Remaining vehicle capacity is too small',
-          })
-        } else {
-          unassigned.push({
-            deliveryId: d.id,
-            reason: 'time_window',
-            detail: 'Cannot be scheduled without constraint violations',
-          })
-        }
-      }
+      const reason: UnassignedReason = allUnreachable
+        ? 'unreachable'
+        : hasCapacity && !hasUnreachable && !hasWindow
+          ? 'capacity'
+          : 'time_window'
+      const detail =
+        reason === 'unreachable'
+          ? 'Destination unreachable or road is closed'
+          : reason === 'capacity'
+            ? 'Remaining vehicle capacity is too small'
+            : 'No vehicle can complete this delivery within its time window or shift'
+      unassigned.push({ deliveryId: d.id, reason, detail })
     }
   }
 

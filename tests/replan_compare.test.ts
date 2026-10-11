@@ -536,7 +536,7 @@ describe('ReRoute Engine — replan and compare', () => {
 
       const u = revised.unassigned.find((x) => x.deliveryId === 'd-heavy')
       expect(u).toBeDefined()
-      expect(u?.reason).toBe('capacity')
+      expect(u?.reason).toBe('time_window')
     })
 
     // ── Task 1: Breakdown during in-progress delivery (travel, service, future) ──
@@ -763,6 +763,68 @@ describe('ReRoute Engine — replan and compare', () => {
       expect(revised.unassigned.length).toBe(deliveries.length)
       expect(revised.unassigned.every((u) => u.reason === 'no_vehicle')).toBe(true)
       expect(revised.unassigned[0].detail).toBe('No active vehicles available to assign delivery')
+    })
+
+    // ── Task 4: Route validation and travel matrix checks in replanning ──
+    it('replanning rejects unreachable destinations missing from matrix as unassigned unreachable', () => {
+      const unreachableWorld: World = {
+        vehicles: [
+          { id: 'v1', name: 'Van 1', capacity: 40, depotId: 'depot', shiftStart: 0, shiftEnd: 480, status: 'active' },
+        ],
+        deliveries: [
+          { id: 'd-isolated', locationId: 'c-isolated', size: 10, serviceMin: 10, window: { start: 0, end: 480 }, priority: 'normal' },
+        ],
+        matrix: {
+          depot: { depot: 0 },
+          'c-isolated': {},
+        },
+      }
+      const emptyPlan: DeliveryPlan = { id: 'empty', label: 'empty', createdAt: 0, routes: [], unassigned: [] }
+      const revised = replan(unreachableWorld, emptyPlan, 10)
+
+      expect(revised.routes[0].stops).toHaveLength(0)
+      expect(revised.unassigned).toHaveLength(1)
+      expect(revised.unassigned[0].deliveryId).toBe('d-isolated')
+      expect(revised.unassigned[0].reason).toBe('unreachable')
+    })
+
+    // ── Task 5: Blocker classification consistency between replan and allocate ──
+    it('mixed constraints in replanning: capacity on v1 and shift overrun on v2 classifies as time_window', () => {
+      const mixedWorld: World = {
+        vehicles: [
+          { id: 'v1', name: 'Van 1', capacity: 5, depotId: 'depot', shiftStart: 0, shiftEnd: 480, status: 'active' },
+          { id: 'v2', name: 'Van 2', capacity: 40, depotId: 'depot', shiftStart: 0, shiftEnd: 25, status: 'active' },
+        ],
+        deliveries: [
+          { id: 'd-mixed', locationId: 'c1', size: 10, serviceMin: 20, window: { start: 0, end: 480 }, priority: 'normal' },
+        ],
+        matrix,
+      }
+      const emptyPlan: DeliveryPlan = { id: 'empty', label: 'empty', createdAt: 0, routes: [], unassigned: [] }
+      const revised = replan(mixedWorld, emptyPlan, 0)
+
+      expect(revised.unassigned).toHaveLength(1)
+      expect(revised.unassigned[0].deliveryId).toBe('d-mixed')
+      expect(revised.unassigned[0].reason).toBe('time_window')
+    })
+
+    it('capacity-only across all active vehicles in replanning classifies as capacity', () => {
+      const capWorld: World = {
+        vehicles: [
+          { id: 'v1', name: 'Van 1', capacity: 5, depotId: 'depot', shiftStart: 0, shiftEnd: 480, status: 'active' },
+          { id: 'v2', name: 'Van 2', capacity: 8, depotId: 'depot', shiftStart: 0, shiftEnd: 480, status: 'active' },
+        ],
+        deliveries: [
+          { id: 'd-too-big', locationId: 'c1', size: 15, serviceMin: 10, window: { start: 0, end: 480 }, priority: 'normal' },
+        ],
+        matrix,
+      }
+      const emptyPlan: DeliveryPlan = { id: 'empty', label: 'empty', createdAt: 0, routes: [], unassigned: [] }
+      const revised = replan(capWorld, emptyPlan, 0)
+
+      expect(revised.unassigned).toHaveLength(1)
+      expect(revised.unassigned[0].deliveryId).toBe('d-too-big')
+      expect(revised.unassigned[0].reason).toBe('capacity')
     })
   })
 })

@@ -187,12 +187,12 @@ export interface SimulationState {
 
 export type DeliveryDecision = 'kept' | 'moved' | 'broken'
 
-/** Named return type for comparePlans. decisions matches compare.ts output directly. */
+/** Named return type for comparePlans. Evaluates deliveries across both original and revised plans. */
 export interface PlanComparison {
-  /** Per-delivery status keyed by deliveryId. Only deliveries present in plan A are included. */
+  /** Per-delivery status keyed by deliveryId for all deliveries evaluated across plans. */
   decisions: Record<string, DeliveryDecision>
-  /** Optional human-readable explanation per deliveryId, populated for 'moved' and 'broken'. */
-  reasons?: Record<string, string>
+  /** Human-readable explanation per deliveryId describing the decision. */
+  reasons: Record<string, string>
   counts: { kept: number; moved: number; broken: number }
 }
 

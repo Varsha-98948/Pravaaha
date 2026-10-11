@@ -1,10 +1,6 @@
-import type { DeliveryDecision, DeliveryPlan } from '../types'
+import type { DeliveryDecision, DeliveryPlan, PlanComparison } from '../types'
 
-export interface PlanComparison {
-  decisions: Record<string, DeliveryDecision>
-  counts: { kept: number; moved: number; broken: number }
-  reasons: Record<string, string>
-}
+export type { PlanComparison }
 
 interface StopInfo {
   vehicleId: string

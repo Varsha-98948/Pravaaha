@@ -307,13 +307,17 @@ export function dbToDeliveryPlan(
       if (delivery) {
         totalLoad += delivery.size
       }
-      const waitMin = Math.max(0, stop.service_start - stop.arrival)
+      const isSkipped = stop.status === 'skipped'
+      const arrival = !Number.isFinite(stop.arrival) || stop.arrival < 0 || isSkipped ? Infinity : stop.arrival
+      const serviceStart = !Number.isFinite(stop.service_start) || stop.service_start < 0 || isSkipped ? Infinity : stop.service_start
+      const departure = !Number.isFinite(stop.departure) || stop.departure < 0 || isSkipped ? Infinity : stop.departure
+      const waitMin = Number.isFinite(serviceStart) && Number.isFinite(arrival) ? Math.max(0, serviceStart - arrival) : 0
       return {
         deliveryId: stop.delivery_id,
         locationId: delivery ? delivery.locationId : '',
-        arrival: stop.arrival,
-        serviceStart: stop.service_start,
-        departure: stop.departure,
+        arrival,
+        serviceStart,
+        departure,
         waitMin,
         status: (stop.status as StopStatus) || 'pending',
       }
@@ -358,9 +362,9 @@ export function deliveryPlanToDb(
         vehicle_id: route.vehicleId,
         delivery_id: stop.deliveryId,
         seq: index,
-        arrival: stop.arrival,
-        service_start: stop.serviceStart,
-        departure: stop.departure,
+        arrival: Number.isFinite(stop.arrival) && stop.arrival >= 0 ? stop.arrival : -1,
+        service_start: Number.isFinite(stop.serviceStart) && stop.serviceStart >= 0 ? stop.serviceStart : -1,
+        departure: Number.isFinite(stop.departure) && stop.departure >= 0 ? stop.departure : -1,
         status: stop.status,
       })
     })

@@ -6,7 +6,7 @@ import { replan } from '../src/engine/replan'
 import { computeStops, validatePlan, validateRoute } from '../src/engine/schedule'
 import type { Delivery, DeliveryPlan, RouteStop, TravelMatrix, Vehicle } from '../src/types'
 
-describe('time', () => { it('formats', () => { expect(fmtTime(0)).toBe('08:00'); expect(fmtTime(90)).toBe('09:30') }); it('validates', () => { expect(isValidWindow({ start: 10, end: 5 })).toBe(false) }) })
+describe('time', () => { it('formats', () => { expect(fmtTime(0)).toBe('08:00'); expect(fmtTime(90)).toBe('09:30'); expect(fmtTime(Infinity)).toBe('—'); expect(fmtTime(-1)).toBe('—') }); it('validates', () => { expect(isValidWindow({ start: 10, end: 5 })).toBe(false) }) })
 describe('engine', () => {
   it('never exceeds capacity', () => originalPlan.routes.forEach(r => expect(r.load).toBeLessThanOrEqual(vehicles.find(v => v.id === r.vehicleId)!.capacity)))
   it('accounts for every delivery', () => expect(originalPlan.routes.flatMap(r => r.stops).length + originalPlan.unassigned.length).toBe(deliveries.length))
