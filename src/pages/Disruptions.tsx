@@ -1,29 +1,17 @@
-import { useEffect, useState } from 'react'
-import { Card, PageHead, State, Badge, SpatialButton } from '../components/ui'
-import {
-  defaultDisruptionInterpreter,
-  getAiInterpreterStatus,
-  type AiStatusResult,
-} from '../services/disruptionInterpreter'
-import { interpretIncidentPreview } from '../services/disruptionService'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Badge, Card, PageHead, State } from '../components/ui'
 import { replan } from '../engine/replan'
-import { applyDisruption, type World } from '../engine/disruptions'
-import { originalPlan, vehicles, deliveries, matrix, locations, locName } from '../data/demo'
-import { SpatialRouteCanvas } from '../components/SpatialRouteCanvas'
+import { applyDisruption, applyDisruptionBatch, type World } from '../engine/disruptions'
+import { getDisruptions, getLocations, getDeliveries, getVehicles, getDeliveryPlan, listDeliveryPlans, saveDelivery, saveDeliveryPlan, updateVehicleStatus } from '../services/persistenceService'
+import { confirmDisruption } from '../services/disruptionService'
+import { isDemoMode } from '../services/supabase'
+import { validateDisruptionEvent } from '../services/validation'
+import { travelMatrixFromPersistedPlan } from '../services/replanningService'
+import { ValidationError } from '../services/errors'
+import { defaultDisruptionInterpreter } from '../services/disruptionInterpreter'
+import { interpretIncidentPreview } from '../services/disruptionService'
 import { fmtTime } from '../utils/time'
-import type { DeliveryPlan, DisruptionEvent, InterpretedDisruption } from '../types'
-import {
-  Bot,
-  CheckCircle2,
-  HelpCircle,
-  AlertCircle,
-  Sparkles,
-  Zap,
-  ArrowRight,
-  ShieldAlert,
-  Clock,
-  RotateCcw,
-} from 'lucide-react'
+import type { DeliveryPlan, DisruptionEvent, InterpretedDisruption, Location, UserProfile, Vehicle } from '../types'
 
 const QUICK_DISRUPTIONS: Array<{ label: string; interpretation: InterpretedDisruption }> = [
   {
@@ -31,11 +19,9 @@ const QUICK_DISRUPTIONS: Array<{ label: string; interpretation: InterpretedDisru
     interpretation: {
       rawText: 'Van 2 broke down near Harbor Grocers at 09:30',
       event: { type: 'vehicle_failure', id: 'dis-v2-fail', at: 90, vehicleId: 'v2', locationId: 'c2' },
-      missing: [],
-      unknownLocations: [],
+      missing: [], unknownLocations: [],
       preview: 'Vehicle Van 2 failed at 09:30 (90m). Remaining stops must be reassigned.',
-      confirmation: 'pending',
-      source: 'placeholder',
+      confirmation: 'pending', source: 'placeholder',
     },
   },
   {
@@ -43,11 +29,9 @@ const QUICK_DISRUPTIONS: Array<{ label: string; interpretation: InterpretedDisru
     interpretation: {
       rawText: 'Road closure between Central Depot and Harbor Grocers starting at 09:00',
       event: { type: 'road_closure', id: 'dis-rc-depot-c2', at: 60, from: 'depot', to: 'c2' },
-      missing: [],
-      unknownLocations: [],
+      missing: [], unknownLocations: [],
       preview: 'Road from Central Depot to Harbor Grocers closed at 09:00 (60m). Routes must detour.',
-      confirmation: 'pending',
-      source: 'placeholder',
+      confirmation: 'pending', source: 'placeholder',
     },
   },
   {
@@ -55,141 +39,329 @@ const QUICK_DISRUPTIONS: Array<{ label: string; interpretation: InterpretedDisru
     interpretation: {
       rawText: 'Urgent order for Eastside Florist at 10:00',
       event: {
-        type: 'urgent_delivery',
-        id: 'dis-urgent-c8',
-        at: 120,
-        delivery: {
-          id: 'd-urgent-1',
-          locationId: 'c8',
-          size: 8,
-          serviceMin: 10,
-          window: { start: 120, end: 240 },
-          priority: 'urgent',
-        },
+        type: 'urgent_delivery', id: 'dis-urgent-c8', at: 120,
+        delivery: { id: 'd-urgent-1', locationId: 'c8', size: 8, serviceMin: 10, window: { start: 120, end: 240 }, priority: 'urgent' },
       },
-      missing: [],
-      unknownLocations: [],
+      missing: [], unknownLocations: [],
       preview: 'Urgent delivery (size 8) at Eastside Florist inserted at 10:00 (120m).',
-      confirmation: 'pending',
-      source: 'placeholder',
+      confirmation: 'pending', source: 'placeholder',
     },
   },
 ]
 
-export default function Disruptions() {
+type EventKind = DisruptionEvent['type']
+
+export default function Disruptions({
+  profile = null,
+  demoRole = 'dispatcher',
+}: {
+  profile?: UserProfile | null
+  demoRole?: UserProfile['role']
+}) {
   const [text, setText] = useState('')
   const [res, setRes] = useState<InterpretedDisruption | null>(null)
   const [err, setErr] = useState('')
   const [success, setSuccess] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
   const [interpreting, setInterpreting] = useState(false)
-  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
-  const [aiStatus, setAiStatus] = useState<AiStatusResult>({
-    configured: false,
-    provider: null,
-    model: null,
-    missingConfig: [],
-  })
+  const [loadError, setLoadError] = useState('')
+  const [kind, setKind] = useState<EventKind>('vehicle_failure')
+  const [at, setAt] = useState('0')
+  const [vehicleId, setVehicleId] = useState('')
+  const [fromLocation, setFromLocation] = useState('')
+  const [toLocation, setToLocation] = useState('')
+  const [deliveryLocation, setDeliveryLocation] = useState('')
+  const [deliverySize, setDeliverySize] = useState('1')
+  const [serviceMin, setServiceMin] = useState('10')
+  const [windowStart, setWindowStart] = useState('0')
+  const [windowEnd, setWindowEnd] = useState('480')
+  const [locations, setLocations] = useState<Location[]>([])
+  const [vehicles, setVehicles] = useState<Vehicle[]>([])
+  const [disruptions, setDisruptions] = useState<DisruptionEvent[]>([])
+  const [world, setWorld] = useState<World | null>(null)
+  const [currentPlan, setCurrentPlan] = useState<DeliveryPlan | null>(null)
 
-  // Retained state across disruptions
-  const [worldState, setWorldState] = useState<World>({
-    vehicles,
-    deliveries,
-    matrix,
-    locations,
-  })
-  const [currentPlan, setCurrentPlan] = useState<DeliveryPlan>(originalPlan)
-  const [appliedEvents, setAppliedEvents] = useState<DisruptionEvent[]>([])
+  const canWrite = isDemoMode
+    ? demoRole === 'admin' || demoRole === 'dispatcher'
+    : profile?.role === 'admin' || profile?.role === 'dispatcher'
 
-  // Check AI integration configuration on mount
-  useEffect(() => {
-    let mounted = true
-    getAiInterpreterStatus()
-      .then((status) => {
-        if (mounted) setAiStatus(status)
-      })
-      .catch(() => {
-        if (mounted) {
-          setAiStatus({
-            configured: false,
-            provider: null,
-            model: null,
-            missingConfig: ['AI API server unreachable'],
-          })
+  const load = useCallback(async () => {
+    setLoading(true)
+    setLoadError('')
+    setErr('')
+    try {
+      if (isDemoMode) {
+        const demo = await import('../data/demo')
+        setLocations(demo.locations)
+        setVehicles(demo.vehicles)
+        setWorld({ vehicles: demo.vehicles, deliveries: demo.deliveries, matrix: demo.matrix, locations: demo.locations })
+        setCurrentPlan(demo.originalPlan)
+        setDisruptions([])
+        return
+      }
+
+      if (!profile?.orgId) throw new ValidationError('Your organization profile is unavailable. Sign out and sign in again, or contact your administrator.')
+
+      const [organizationVehicles, organizationDeliveries, organizationLocations, organizationDisruptions, plans] = await Promise.all([
+        getVehicles(profile.orgId),
+        getDeliveries(profile.orgId),
+        getLocations(profile.orgId),
+        getDisruptions(profile.orgId),
+        listDeliveryPlans(profile.orgId),
+      ])
+      const latest = plans[0]
+      const plan = latest ? await getDeliveryPlan(latest.id, profile.orgId) : null
+
+      setLocations(organizationLocations)
+      setVehicles(organizationVehicles)
+      setDisruptions(organizationDisruptions)
+      setCurrentPlan(plan)
+      if (plan) {
+        const base: World = {
+          vehicles: organizationVehicles,
+          deliveries: organizationDeliveries,
+          matrix: travelMatrixFromPersistedPlan(plan, organizationVehicles),
+          locations: organizationLocations,
         }
-      })
-    return () => {
-      mounted = false
+        const restored = applyDisruptionBatch(base, organizationDisruptions, plan.createdAt)
+        if (restored.rejected.length > 0) {
+          throw new ValidationError(`Could not restore persisted disruption history: ${restored.rejected.map(item => item.reason).join('; ')}`)
+        }
+        setWorld(restored.world)
+      } else {
+        setWorld({ vehicles: organizationVehicles, deliveries: organizationDeliveries, matrix: {}, locations: organizationLocations })
+      }
+    } catch (cause) {
+      setWorld(null)
+      setCurrentPlan(null)
+      setLoadError((cause as Error).message || 'Unable to load organization disruption data.')
+    } finally {
+      setLoading(false)
     }
-  }, [])
+  }, [profile?.orgId])
 
-  const run = async () => {
-    if (!text.trim()) return
+  useEffect(() => { void load() }, [load])
+
+  const locationNames = useMemo(() => new Map(locations.map(location => [location.id, location.name])), [locations])
+  const locName = (id: string) => locationNames.get(id) ?? id
+  const travelLegCount = world ? Object.values(world.matrix).reduce((total, row) => total + Object.keys(row).length, 0) : 0
+
+  const prepare = () => {
     setErr('')
     setSuccess('')
+    if (!text.trim()) {
+      setErr('Enter a short incident description before preparing the disruption.')
+      return
+    }
+
+    if (isDemoMode) {
+      setRes({
+        rawText: text,
+        event: null,
+        missing: ['AI interpreter is not configured. Choose a quick incident scenario in demo mode.'],
+        unknownLocations: [],
+        preview: 'Free-text interpretation is not configured.',
+        confirmation: 'pending',
+        source: 'placeholder',
+      })
+      return
+    }
+
+    const effectiveAt = Number(at)
+    if (!Number.isFinite(effectiveAt) || effectiveAt < 0) {
+      setErr('Effective time must be a non-negative simulation minute.')
+      return
+    }
+
+    let event: DisruptionEvent
+    const eventId = `dis-${crypto.randomUUID()}`
+    if (kind === 'vehicle_failure') {
+      event = { type: kind, id: eventId, at: effectiveAt, vehicleId }
+    } else if (kind === 'road_closure') {
+      event = { type: kind, id: eventId, at: effectiveAt, from: fromLocation, to: toLocation }
+    } else {
+      const size = Number(deliverySize)
+      const service = Number(serviceMin)
+      const start = Number(windowStart)
+      const end = Number(windowEnd)
+      const deliveryId = `delivery-${crypto.randomUUID()}`
+      event = {
+        type: kind,
+        id: eventId,
+        at: effectiveAt,
+        delivery: {
+          id: deliveryId,
+          locationId: deliveryLocation,
+          size,
+          serviceMin: service,
+          window: { start, end },
+          priority: 'urgent',
+        },
+      }
+    }
+
+    const checked = validateDisruptionEvent(event, locations.map(location => location.id), vehicles.map(vehicle => vehicle.id))
+    if (!checked.isValid || !checked.event) {
+      setErr(checked.errors.join(' '))
+      setRes(null)
+      return
+    }
+    const validatedEvent = checked.event
+
+    const preview = validatedEvent.type === 'vehicle_failure'
+      ? `${vehicles.find(vehicle => vehicle.id === validatedEvent.vehicleId)?.name ?? validatedEvent.vehicleId} fails at ${fmtTime(validatedEvent.at)}.`
+      : validatedEvent.type === 'road_closure'
+        ? `Road from ${locName(validatedEvent.from)} to ${locName(validatedEvent.to)} closes at ${fmtTime(validatedEvent.at)}.`
+        : `Urgent delivery of ${validatedEvent.delivery.size} units at ${locName(validatedEvent.delivery.locationId)} at ${fmtTime(validatedEvent.at)}.`
+
+    setRes({ rawText: text.trim(), event: validatedEvent, missing: [], unknownLocations: [], preview, confirmation: 'pending', source: 'placeholder' })
+  }
+
+  const prepareWithAi = async () => {
+    setErr('')
+    setSuccess('')
+    if (!text.trim()) {
+      setErr('Enter a short incident description before preparing the disruption.')
+      return
+    }
+    if (isDemoMode) {
+      setErr('AI interpretation is available only through the configured backend in live mode. Use a demo scenario instead.')
+      return
+    }
+    if (!profile?.orgId) {
+      setErr('Your organization profile is unavailable. Sign in again before interpreting an incident.')
+      return
+    }
     setInterpreting(true)
-
     try {
-      const activeLocations = worldState.locations || locations
-      const knownLocationIds = activeLocations.map((l) => l.id)
-      const knownVehicleIds = worldState.vehicles.map((v) => v.id)
-      const currentTime = appliedEvents.length > 0 ? appliedEvents[appliedEvents.length - 1].at : 0
-
-      const result = await interpretIncidentPreview(
-        text,
-        defaultDisruptionInterpreter,
-        knownLocationIds,
-        knownVehicleIds,
-        {
-          locations: activeLocations,
-          knownVehicles: worldState.vehicles,
-          currentTime,
-        }
+      const interpreted = await interpretIncidentPreview(
+        text.trim(), defaultDisruptionInterpreter,
+        locations.map(location => location.id), vehicles.map(vehicle => vehicle.id),
+        { locations, knownVehicles: vehicles, currentTime: currentPlan?.createdAt ?? 0 },
       )
-      setRes(result)
-    } catch (e: unknown) {
-      setErr((e as Error).message || 'Failed to interpret incident.')
+      setRes(interpreted)
+      if (!interpreted.event) setErr(interpreted.error || interpreted.missing.join(' ') || 'The incident could not be interpreted. Correct the details and try again.')
+    } catch (cause) {
+      setRes(null)
+      setErr((cause as Error).message || 'Unable to interpret this incident.')
     } finally {
       setInterpreting(false)
     }
   }
 
-  const confirm = () => {
+  const confirm = async () => {
     setErr('')
     setSuccess('')
-
-    if (!res || !res.event) {
+    if (!res?.event) {
       setErr('Cannot confirm disruption: no disruption event was generated or validated.')
       return
     }
+    if (!canWrite) {
+      setErr('Your role is read-only and cannot confirm disruptions or save replanned routes.')
+      return
+    }
 
+    if (isDemoMode) {
+      try {
+        if (!world || !currentPlan) throw new ValidationError('No active plan is available to replan.')
+        const updatedWorld = applyDisruption(world, res.event)
+        const replanned = replan(updatedWorld, currentPlan, res.event.at)
+        setWorld(updatedWorld)
+        setCurrentPlan(replanned)
+        setDisruptions(previous => [...previous, res.event!])
+        setSuccess(`Demo disruption applied at ${fmtTime(res.event.at)} (${res.event.at}m). Plan updated with ${replanned.routes.length} vehicle routes.`)
+        setRes(null)
+        setText('')
+      } catch (cause) {
+        setErr(`${(cause as Error).message} — the plan remains unchanged.`)
+      }
+      return
+    }
+
+    if (!profile?.orgId || !world || !currentPlan) {
+      setErr('A saved organization route plan is required before disruptions can be confirmed and replanned.')
+      return
+    }
+    if (res.event.at < currentPlan.createdAt) {
+      setErr('The disruption time cannot be earlier than the latest saved plan simulation time.')
+      return
+    }
+    if (travelLegCount === 0) {
+      setErr('This database has no travel-time matrix, and the saved plan contains no usable route legs. Replanning is unavailable until route-leg timing data exists.')
+      return
+    }
+    if (res.event.type === 'road_closure' && !world.matrix[res.event.from]?.[res.event.to] && !world.matrix[res.event.to]?.[res.event.from]) {
+      setErr('This road has no travel time recorded in the saved plan. The closure cannot be replanned safely with the available data.')
+      return
+    }
+
+    setSubmitting(true)
+    let disruptionRecorded = false
+    let urgentDeliverySaved = false
     try {
-      const event = res.event
-      // 1. Apply disruption to the current world snapshot
-      const updatedWorld = applyDisruption(worldState, event)
-      // 2. Replan routes at the event's actual simulation time
-      const replanned = replan(updatedWorld, currentPlan, event.at)
+      const replayed = applyDisruptionBatch(world, disruptions, res.event.at)
+      if (replayed.rejected.length > 0) {
+        throw new ValidationError(`Persisted disruption history cannot be replayed: ${replayed.rejected.map(item => item.reason).join('; ')}`)
+      }
+      const updatedWorld = applyDisruption(replayed.world, res.event)
+      const generated = replan(updatedWorld, currentPlan, res.event.at)
+      const savedPlan: DeliveryPlan = {
+        ...generated,
+        id: `plan-replanned-${Date.now()}-${crypto.randomUUID()}`,
+      }
 
-      // 3. Retain the resulting plan and world state
-      setWorldState(updatedWorld)
-      setCurrentPlan(replanned)
-      setAppliedEvents((prev) => [...prev, event])
-      setSuccess(
-        `Disruption confirmed and applied at ${fmtTime(event.at)} (${event.at}m). Route plan updated with ${replanned.routes.length} vehicle trajectories.`
-      )
+      // Persist urgent deliveries first so generated plan stops satisfy the
+      // deliveries foreign key. The confirmation RPC then records the event
+      // and its audit row before the plan is saved.
+      if (res.event.type === 'urgent_delivery') {
+        await saveDelivery(res.event.delivery, profile.orgId, profile)
+        urgentDeliverySaved = true
+      }
+      await confirmDisruption({
+        interpreted: { ...res, confirmation: 'confirmed' },
+        orgId: profile.orgId,
+        actorProfile: profile,
+        knownLocationIds: locations.map(location => location.id),
+        knownVehicleIds: vehicles.map(vehicle => vehicle.id),
+      })
+      disruptionRecorded = true
+      if (res.event.type === 'vehicle_failure') {
+        await updateVehicleStatus(res.event.vehicleId, profile.orgId, 'failed', profile.role, profile.id)
+      }
+
+      try {
+        await saveDeliveryPlan(savedPlan, profile.orgId, profile, currentPlan.id)
+      } catch (cause) {
+        setRes(null)
+        await load()
+        setErr(`The disruption was recorded, but the replanned routes could not be saved: ${(cause as Error).message}`)
+        return
+      }
+
+      setWorld(updatedWorld)
+      setCurrentPlan(savedPlan)
+      setDisruptions(previous => [...previous, res.event!].sort((a, b) => a.at - b.at))
+      setSuccess(`Disruption recorded and audited. Replanned routes were saved at ${fmtTime(savedPlan.createdAt)}.`)
       setRes(null)
       setText('')
-    } catch (e) {
-      setSuccess('')
-      setErr((e as Error).message + ' — the plan remains unchanged.')
+    } catch (cause) {
+      setErr(disruptionRecorded
+        ? `The disruption was recorded, but a related operational update failed: ${(cause as Error).message}`
+        : urgentDeliverySaved
+          ? `The urgent delivery was saved, but disruption confirmation failed: ${(cause as Error).message}`
+          : `${(cause as Error).message} — no success was reported.`)
+    } finally {
+      setSubmitting(false)
     }
   }
 
-  // Active closure helper for canvas highlight
-  const activeClosure = appliedEvents.find((e) => e.type === 'road_closure') as
-    | { from: string; to: string; at: number }
-    | undefined
+  return <>
+    <PageHead
+      title="Disruptions"
+      sub="Describe or select what happened. Nothing is applied to routes until explicitly confirmed."
+    />
 
-  return (
     <div className="space-y-6">
       <PageHead
         title="Disruptions & Dynamic Replanning"
@@ -203,11 +375,10 @@ export default function Disruptions() {
 
       {/* AI Gateway Status Banner */}
       <div
-        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 text-xs transition-all shadow-sm ${
-          aiStatus.configured
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 text-xs transition-all shadow-sm ${aiStatus.configured
             ? 'border-[#243607]/25 bg-[#243607]/07 text-[#30280D]'
             : 'border-[#91696E]/25 bg-[#91696E]/08 text-[#30280D]'
-        }`}
+          }`}
       >
         <div className="flex items-center gap-2.5">
           {aiStatus.configured ? (
@@ -321,167 +492,84 @@ export default function Disruptions() {
                 <span className="font-bold text-sm text-[#30280D]">{res.preview}</span>
               </div>
             </div>
+          </div> : <div className="mb-3 grid gap-3 rounded border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+          <label className="text-xs text-slate-600">Disruption type
+            <select value={kind} onChange={event => setKind(event.target.value as EventKind)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm">
+              <option value="vehicle_failure">Vehicle failure</option><option value="road_closure">Road closure</option><option value="urgent_delivery">Urgent delivery</option>
+            </select>
+          </label>
+          <label className="text-xs text-slate-600">Effective time (simulation minutes)
+            <input type="number" min="0" value={at} onChange={event => setAt(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" />
+          </label>
+          {kind === 'vehicle_failure' && <label className="text-xs text-slate-600 sm:col-span-2">Vehicle
+            <select value={vehicleId} onChange={event => setVehicleId(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select a vehicle</option>{vehicles.map(vehicle => <option key={vehicle.id} value={vehicle.id}>{vehicle.name}</option>)}</select>
+          </label>}
+          {kind === 'road_closure' && <>
+            <label className="text-xs text-slate-600">From location<select value={fromLocation} onChange={event => setFromLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+            <label className="text-xs text-slate-600">To location<select value={toLocation} onChange={event => setToLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.filter(location => location.id !== fromLocation).map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+          </>}
+          {kind === 'urgent_delivery' && <>
+            <label className="text-xs text-slate-600 sm:col-span-2">Delivery location<select value={deliveryLocation} onChange={event => setDeliveryLocation(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="">Select location</option>{locations.filter(location => location.kind === 'customer').map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+            <label className="text-xs text-slate-600">Size<input type="number" min="1" value={deliverySize} onChange={event => setDeliverySize(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
+            <label className="text-xs text-slate-600">Service minutes<input type="number" min="0" value={serviceMin} onChange={event => setServiceMin(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
+            <label className="text-xs text-slate-600">Window start<input type="number" min="0" value={windowStart} onChange={event => setWindowStart(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
+            <label className="text-xs text-slate-600">Window end<input type="number" min="1" value={windowEnd} onChange={event => setWindowEnd(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
+          </>}
+        </div>}
 
-            {/* State: Needs Clarification */}
-            {res.needsClarification && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-[#91696E]/30 bg-[#91696E]/10 p-3 text-xs text-[#30280D]">
-                <HelpCircle size={16} className="shrink-0 text-[#91696E] mt-0.5" />
-                <div>
-                  <div className="font-bold text-[#91696E]">Clarification Required</div>
-                  <p className="mt-0.5 leading-relaxed text-[#30280D]/85">
-                    {res.clarificationQuestion ||
-                      'The incident report is ambiguous. Please clarify locations or affected vehicles.'}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* State: Unrecognized Entities */}
-            {(res.unknownLocations.length > 0 || (res.unknownVehicles && res.unknownVehicles.length > 0)) && (
-              <div className="rounded-lg border border-[#91696E]/30 bg-[#91696E]/10 p-3 text-xs space-y-1 text-[#30280D]">
-                <div className="font-bold text-[#91696E]">Unrecognized Entity Scope:</div>
-                {res.unknownLocations.length > 0 && (
-                  <div>• Unknown location(s): <span className="font-mono font-semibold">{res.unknownLocations.join(', ')}</span></div>
-                )}
-                {res.unknownVehicles && res.unknownVehicles.length > 0 && (
-                  <div>• Unknown vehicle(s): <span className="font-mono font-semibold">{res.unknownVehicles.join(', ')}</span></div>
-                )}
-              </div>
-            )}
-
-            {/* State: Successfully Parsed Event Object */}
-            {res.event && (
-              <div className="rounded-lg border border-[#30280D]/10 bg-white p-3.5 text-xs text-[#30280D] space-y-2 shadow-sm">
-                <div className="font-bold text-xs flex items-center gap-1.5 text-[#243607]">
-                  <CheckCircle2 size={15} />
-                  Structured Disruption Event Schema:
-                </div>
-                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-[#30280D]/06">
-                  <div>
-                    <span className="text-[#30280D]/60 block">Event Type</span>
-                    <span className="font-mono font-bold text-sm text-[#30280D]">
-                      {res.event.type}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[#30280D]/60 block">Effective Time</span>
-                    <span className="font-bold text-sm text-[#30280D]">
-                      {fmtTime(res.event.at)} ({res.event.at}m)
-                    </span>
-                  </div>
-
-                  {res.event.type === 'road_closure' && (
-                    <div className="col-span-2 rounded bg-[#f2f3ec] p-2">
-                      <span className="text-[#30280D]/60 block">Closed Road Segment</span>
-                      <span className="font-semibold text-xs text-[#30280D]">
-                        {locName(res.event.from)} ({res.event.from}) → {locName(res.event.to)} ({res.event.to})
-                      </span>
-                    </div>
-                  )}
-
-                  {res.event.type === 'vehicle_failure' && (
-                    <div className="col-span-2 rounded bg-[#f2f3ec] p-2">
-                      <span className="text-[#30280D]/60 block">Failed Vehicle</span>
-                      <span className="font-semibold text-xs text-[#30280D]">
-                        {res.event.vehicleId} {res.event.locationId ? `at ${locName(res.event.locationId)}` : ''}
-                      </span>
-                    </div>
-                  )}
-
-                  {res.event.type === 'urgent_delivery' && (
-                    <div className="col-span-2 rounded bg-[#f2f3ec] p-2 space-y-1">
-                      <div>
-                        <span className="text-[#30280D]/60">Destination:</span>{' '}
-                        <span className="font-semibold">{locName(res.event.delivery.locationId)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[#30280D]/60">Time Window:</span>{' '}
-                        <span className="font-semibold">
-                          {fmtTime(res.event.delivery.window.start)}–{fmtTime(res.event.delivery.window.end)} · Size: {res.event.delivery.size} units
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Decision Controls */}
-            <div className="pt-2 flex flex-wrap items-center gap-2.5">
-              {res.event ? (
-                <SpatialButton variant="primary" onClick={confirm}>
-                  Confirm and Replan Routes
-                </SpatialButton>
-              ) : (
-                <span className="text-xs text-[#30280D]/60 italic">
-                  Cannot replan: a valid disruption event must be resolved first.
-                </span>
-              )}
-              <SpatialButton
-                variant="outline"
-                size="md"
-                onClick={() => {
-                  setRes(null)
-                  setErr('')
-                }}
-              >
-                Dismiss
-              </SpatialButton>
-            </div>
-          </div>
-        )}
-
-        {success && <div className="mt-4"><State kind="success" text={success} /></div>}
-        {err && <div className="mt-4"><State kind="error" text={err} /></div>}
-      </Card>
-
-      {/* Applied Disruptions Timeline */}
-      {appliedEvents.length > 0 && (
-        <Card
-          title="Applied Disruptions Journal"
-          sub="Chronological sequence of disruptions currently incorporated into the route engine"
-        >
-          <div className="space-y-2">
-            {appliedEvents.map((ev, i) => (
-              <div
-                key={ev.id}
-                className="flex items-center justify-between rounded-xl border border-[#30280D]/10 bg-white p-3 text-xs shadow-sm"
-              >
-                <div className="flex items-center gap-2.5">
-                  <span className="font-mono font-bold text-[#30280D]/50">#{i + 1}</span>
-                  <Badge t="bad">{ev.type}</Badge>
-                  <span className="font-bold text-[#30280D]">
-                    at {fmtTime(ev.at)} ({ev.at}m)
-                  </span>
-                  <span className="font-mono text-[#30280D]/60 text-[11px]">
-                    ID: {ev.id}
-                  </span>
-                </div>
-                <Badge t="ok">Active in Model</Badge>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {/* Spatial Route Network with Dynamic Replanning View */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-bold tracking-tight uppercase text-[#30280D]/80">
-            Current Plan Visualizer ({currentPlan.label})
-          </h2>
-          <span className="text-xs text-[#30280D]/60 font-medium">
-            Updated immediately upon confirmed replan
-          </span>
+        <textarea value={text} onChange={event => setText(event.target.value)} rows={3} placeholder="Describe what happened" className="w-full rounded border border-slate-300 p-2 text-sm" />
+        <div className="mt-2 flex gap-2">
+          {!isDemoMode && <button onClick={() => void prepareWithAi()} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded bg-[#243607] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{interpreting ? 'Interpreting…' : 'Interpret with AI'}</button>}
+          <button onClick={prepare} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-40">Prepare structured event</button>
         </div>
-        <SpatialRouteCanvas
-          plan={currentPlan}
-          vehicles={worldState.vehicles}
-          selectedVehicleId={selectedVehicleId}
-          onSelectVehicle={setSelectedVehicleId}
-          highlightDisruption={activeClosure}
-        />
-      </div>
-    </div>
-  )
+
+        {res && <div className="mt-4 rounded border border-slate-200 bg-slate-50/50 p-4 text-sm">
+          <div className="flex items-center gap-2"><Badge t="warn">{res.source}</Badge><span className="font-medium text-slate-800">{res.preview}</span></div>
+          {res.event && <div className="mt-2 text-xs text-slate-600"><span className="font-semibold">Event Type:</span> {res.event.type} · <span className="font-semibold">Effective Time:</span> {fmtTime(res.event.at)} ({res.event.at}m)</div>}
+          {res.missing.length > 0 && <div className="mt-1 text-xs text-amber-700">Missing: {res.missing.join(', ')}</div>}
+          {res.unknownLocations?.length ? <div className="mt-1 text-xs text-red-700">Unknown organization locations: {res.unknownLocations.join(', ')}. Select or correct known locations before confirming.</div> : null}
+          {res.unknownVehicles?.length ? <div className="mt-1 text-xs text-red-700">Unknown organization vehicles: {res.unknownVehicles.join(', ')}. Select or correct known vehicles before confirming.</div> : null}
+          {!isDemoMode && !currentPlan && <State kind="error" text="A saved organization plan is required before a disruption can be confirmed." />}
+          {!isDemoMode && currentPlan && travelLegCount === 0 && <State kind="error" text="No route-leg travel times can be recovered from the saved plan. The migrations define no separate travel-time matrix, so live replanning is unavailable for this data." />}
+          <div className="mt-3 flex gap-2">
+            <button onClick={() => void confirm()} disabled={!res.event || !canWrite || submitting || (!isDemoMode && (!currentPlan || travelLegCount === 0))} className="rounded bg-navy px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{submitting ? 'Saving disruption and plan…' : 'Confirm and replan'}</button>
+            <button onClick={() => { setRes(null); setErr('') }} disabled={submitting} className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50">Reject</button>
+          </div>
+        </div>}
+      </>}
+
+      {success && <State kind="success" text={success} />}
+      {err && <State kind="error" text={err} />}
+    </Card>
+
+    {!loading && !loadError && <Card title="Persisted Disruptions">
+      {disruptions.length === 0 ? <State kind="empty" text="No disruptions have been recorded for this organization." /> : <div className="space-y-1.5">
+        {disruptions.map(event => <div key={event.id} className="flex items-center gap-2 text-xs text-slate-700"><Badge t="bad">{event.type}</Badge><span>at {fmtTime(event.at)} ({event.at}m) — ID: {event.id}</span></div>)}
+      </div>}
+    </Card>}
+
+    {!loading && !loadError && <Card title={`Active Plan${currentPlan ? ` (${currentPlan.label})` : ''}`}>
+      {!currentPlan ? <State kind="empty" text="No saved organization plan is available to display or replan." /> : <>
+        <div className="mb-4 flex flex-wrap gap-4 text-xs text-slate-600">
+          <div><span className="font-semibold text-slate-800">Routes:</span> {currentPlan.routes.length}</div>
+          <div><span className="font-semibold text-slate-800">Scheduled stops:</span> {currentPlan.routes.reduce((count, route) => count + route.stops.length, 0)}</div>
+          <div><span className="font-semibold text-slate-800">Unassigned deliveries:</span> {currentPlan.unassigned.length}</div>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-3">
+          {currentPlan.routes.map(route => {
+            const vehicle = world?.vehicles.find(item => item.id === route.vehicleId)
+            return <div key={route.vehicleId} className="rounded-lg border border-slate-200 bg-slate-50/50 p-3">
+              <div className="mb-2 flex items-center justify-between"><span className="font-semibold text-slate-800">{vehicle?.name ?? route.vehicleId}</span><Badge t={vehicle?.status === 'failed' ? 'bad' : 'mute'}>{route.load}/{vehicle?.capacity ?? 0} load {vehicle?.status === 'failed' ? '(failed)' : ''}</Badge></div>
+              <ol className="space-y-2 border-l-2 border-teal/40 pl-3">
+                {route.stops.map(stop => <li key={stop.deliveryId} className="text-xs"><div className="font-medium text-slate-800">{fmtTime(stop.serviceStart)} {locName(stop.locationId)} <Badge t={stop.status === 'completed' ? 'ok' : stop.status === 'late' ? 'warn' : stop.status === 'skipped' ? 'bad' : 'mute'}>{stop.status}</Badge></div><div className="text-slate-500">Arr {fmtTime(stop.arrival)}{stop.waitMin > 0 && ` · waits ${stop.waitMin}m`} · Dep {fmtTime(stop.departure)}</div></li>)}
+                {route.stops.length === 0 && <li className="text-xs text-slate-400">No stops assigned</li>}
+              </ol>
+            </div>
+          })}
+        </div>
+        {currentPlan.unassigned.length > 0 && <div className="mt-4 border-t border-slate-200 pt-3"><div className="mb-2 text-xs font-semibold text-slate-700">Unassigned Deliveries:</div><div className="flex flex-wrap gap-2">{currentPlan.unassigned.map(item => <div key={item.deliveryId} className="rounded border border-red-200 bg-red-50 p-2 text-xs"><span className="font-semibold text-red-800">{item.deliveryId}:</span> <Badge t="bad">{item.reason}</Badge><div className="mt-0.5 text-slate-600">{item.detail}</div></div>)}</div></div>}
+      </>}
+    </Card>}
+  </div >
+  </>
 }

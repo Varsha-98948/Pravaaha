@@ -226,4 +226,3 @@ export interface InterpretedDisruption {
   /** Error message if provider call failed. */
   error?: string
 }
-

@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import type { DeliveryPlan, Vehicle } from '../types'
-import { locations, locName } from '../data/demo'
+import type { DeliveryPlan, Location, Vehicle } from '../types'
 import { fmtTime } from '../utils/time'
 import { Eye, Layers, Compass, Navigation } from 'lucide-react'
 
-// Coordinate dictionary from demo.ts
-const xyCoords: Record<string, [number, number]> = {
+// Preserve the incoming demo layout for its known IDs. Organization-specific
+// locations receive deterministic positions without importing sample records.
+const knownCoordinates: Record<string, [number, number]> = {
   depot: [0, 0],
   c1: [2, 5],
   c2: [6, 3],
@@ -27,6 +27,7 @@ const VEHICLE_COLORS = [
 interface SpatialRouteCanvasProps {
   plan: DeliveryPlan
   vehicles: Vehicle[]
+  locations?: Location[]
   selectedVehicleId?: string | null
   onSelectVehicle?: (id: string | null) => void
   highlightDisruption?: { from?: string; to?: string; vehicleId?: string; at?: number } | null
@@ -35,6 +36,7 @@ interface SpatialRouteCanvasProps {
 export function SpatialRouteCanvas({
   plan,
   vehicles,
+  locations: organizationLocations = [],
   selectedVehicleId = null,
   onSelectVehicle,
   highlightDisruption = null,
@@ -42,6 +44,21 @@ export function SpatialRouteCanvas({
   const [is3D, setIs3D] = useState(false)
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
+
+  const xyCoords: Record<string, [number, number]> = {}
+  const sortedLocations = [...organizationLocations].sort((a, b) => a.id.localeCompare(b.id))
+  const depot = sortedLocations.find(location => location.kind === 'depot')
+  for (const location of sortedLocations) {
+    const known = knownCoordinates[location.id]
+    if (known) xyCoords[location.id] = known
+  }
+  if (depot && !xyCoords[depot.id]) xyCoords[depot.id] = [0, 0]
+  const unpositionedLocations = sortedLocations.filter(location => !xyCoords[location.id])
+  unpositionedLocations.forEach((location, index) => {
+    const angle = (2 * Math.PI * index) / Math.max(unpositionedLocations.length, 1) - Math.PI / 2
+    const radius = 4 + (index % 3) * 1.25
+    xyCoords[location.id] = [radius * Math.cos(angle), radius * Math.sin(angle)]
+  })
 
   // Canvas bounds projection
   // X: [-7, 10] -> SVG [60, 740]
@@ -77,7 +94,7 @@ export function SpatialRouteCanvas({
               Spatial Network Visualization
             </span>
             <span className="ml-2 text-[11px] text-[#30280D]/60 hidden sm:inline">
-              9 Waypoints · {plan.routes.length} Active Vehicle Trajectories
+              {organizationLocations.length} Waypoints · {plan.routes.length} Vehicle Trajectories
             </span>
           </div>
         </div>
@@ -226,14 +243,16 @@ export function SpatialRouteCanvas({
               const isSelected = selectedVehicleId === route.vehicleId
 
               // Path points: depot -> stops in order -> depot
-              const points: Array<[number, number]> = [xyCoords.depot]
+              const vehicle = vehicles.find(item => item.id === route.vehicleId)
+              const depotPoint = (vehicle && xyCoords[vehicle.depotId]) || [0, 0] as [number, number]
+              const points: Array<[number, number]> = [depotPoint]
               route.stops.forEach((s) => {
                 if (xyCoords[s.locationId]) {
                   points.push(xyCoords[s.locationId])
                 }
               })
               // Route closes back at depot
-              points.push(xyCoords.depot)
+              points.push(depotPoint)
 
               // Build path d string
               const pathD = points
@@ -280,7 +299,7 @@ export function SpatialRouteCanvas({
             })}
 
             {/* Waypoint Nodes (Customers & Depot) */}
-            {locations.map((loc) => {
+            {organizationLocations.map((loc) => {
               const coords = xyCoords[loc.id]
               if (!coords) return null
 
@@ -367,7 +386,7 @@ export function SpatialRouteCanvas({
           <div className="absolute top-4 right-4 z-20 w-64 rounded-xl border border-[#30280D]/15 bg-white/95 p-3.5 shadow-spatial-lg backdrop-blur-md animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-[#30280D]/10 pb-2">
               <span className="text-xs font-bold text-[#30280D]">
-                {locName(activeNodeInfo)}
+                {organizationLocations.find(location => location.id === activeNodeInfo)?.name ?? activeNodeInfo}
               </span>
               <span className="rounded bg-[#243607]/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#243607]">
                 ID: {activeNodeInfo}
@@ -378,7 +397,7 @@ export function SpatialRouteCanvas({
               <div className="flex justify-between">
                 <span className="text-[#30280D]/60">Location Type:</span>
                 <span className="font-semibold capitalize">
-                  {locations.find((l) => l.id === activeNodeInfo)?.kind ?? 'Customer'}
+                  {organizationLocations.find((location) => location.id === activeNodeInfo)?.kind ?? 'Unknown'}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -420,7 +439,7 @@ export function SpatialRouteCanvas({
                   </div>
                 ) : (
                   <span className="text-[11px] text-[#30280D]/50 italic">
-                    {activeNodeInfo === 'depot' ? 'Depot Hub Origin/Terminus' : 'No visits scheduled in current plan'}
+                    {organizationLocations.find(location => location.id === activeNodeInfo)?.kind === 'depot' ? 'Depot Hub Origin/Terminus' : 'No visits scheduled in current plan'}
                   </span>
                 )}
               </div>

@@ -1,91 +1,117 @@
-import { Card, PageHead, Badge, Table, MetricCard } from '../components/ui'
-import { users } from '../data/demo'
-import { Users as UsersIcon, ShieldCheck, Key, Lock, UserCheck } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { Badge, Card, PageHead, State, Table, MetricCard } from '../components/ui'
+import { canAdministerRoles } from '../services/authService'
+import { getProfiles, updateUserProfile } from '../services/persistenceService'
+import { isDemoMode } from '../services/supabase'
+import type { Role, UserProfile } from '../types'
 
-export default function Users() {
-  const adminCount = users.filter((u) => u.role === 'admin').length
-  const dispatcherCount = users.filter((u) => u.role === 'dispatcher').length
-  const viewerCount = users.filter((u) => u.role === 'viewer').length
+const roles: Role[] = ['admin', 'dispatcher', 'viewer']
 
-  return (
-    <div className="space-y-6">
-      <PageHead
-        title="Team Governance & Access Control"
-        sub="Role-based authorization (RBAC) enforced cryptographically via database security triggers and row-level policies."
-        badge={
-          <Badge t="ok" dot>
-            Admin Scope Active
-          </Badge>
-        }
-      />
+export default function Users({ profile = null }: { profile?: UserProfile | null }) {
+  const [profiles, setProfiles] = useState<UserProfile[] | null>(null)
+  const [roleDrafts, setRoleDrafts] = useState<Record<string, Role>>({})
+  const [loading, setLoading] = useState(true)
+  const [savingId, setSavingId] = useState('')
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const canManage = isDemoMode ? false : Boolean(profile && canAdministerRoles(profile))
 
-      {/* Role Counts */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <MetricCard
-          label="Administrators"
-          value={adminCount}
-          sub="Full organization & team rights"
-          icon={<Key size={18} />}
-          trend="Superuser"
-          trendType="neutral"
-        />
-        <MetricCard
-          label="Active Dispatchers"
-          value={dispatcherCount}
-          sub="Route planning & disruption confirmation"
-          icon={<ShieldCheck size={18} />}
-          trend="Operational"
-          trendType="positive"
-        />
-        <MetricCard
-          label="Viewers / Analysts"
-          value={viewerCount}
-          sub="Read-only telemetry access"
-          icon={<UserCheck size={18} />}
-          trend="Auditing"
-          trendType="positive"
-        />
+  const load = useCallback(async () => {
+    setError('')
+    setSuccess('')
+    setLoading(true)
+    try {
+      let records: UserProfile[]
+      if (isDemoMode) {
+        const samples = await import('../data/demo')
+        records = samples.users
+      } else {
+        if (!profile?.orgId) throw new Error('Your organization profile is unavailable. Sign out and sign in again, or contact your administrator.')
+        if (!canAdministerRoles(profile)) throw new Error('Only organization administrators can open user administration.')
+        records = await getProfiles(profile.orgId)
+      }
+      setProfiles(records)
+      setRoleDrafts(Object.fromEntries(records.map(record => [record.id, record.role])))
+    } catch (cause) {
+      setProfiles(null)
+      setError((cause as Error).message || 'Unable to load organization profiles. Check your access and try again.')
+    } finally {
+      setLoading(false)
+    }
+  }, [profile])
+
+  useEffect(() => { void load() }, [load])
+
+  const saveRole = async (target: UserProfile) => {
+    if (!profile || !canAdministerRoles(profile)) {
+      setError('Only organization administrators can change profile roles.')
+      return
+    }
+    const role = roleDrafts[target.id]
+    if (!role || role === target.role) return
+
+    setError('')
+    setSuccess('')
+    setSavingId(target.id)
+    try {
+      const updated = await updateUserProfile(target.id, profile.orgId, { role }, profile)
+      setProfiles(current => current?.map(record => record.id === updated.id ? updated : record) ?? null)
+      setRoleDrafts(current => ({ ...current, [updated.id]: updated.role }))
+      setSuccess(`Updated ${updated.name}'s role to ${updated.role}.`)
+    } catch (cause) {
+      setError(`Could not update ${target.name}'s role. ${(cause as Error).message || 'Check your administrator permissions and try again.'}`)
+    } finally {
+      setSavingId('')
+    }
+  }
+
+  const rows = (profiles ?? []).map(user => [
+    user.name,
+    user.email || 'Email unavailable',
+    <Badge key={`${user.id}-role`} t={user.role === 'admin' ? 'warn' : user.role === 'dispatcher' ? 'ok' : 'mute'}>{user.role}</Badge>,
+    canManage && !isDemoMode
+      ? <div key={`${user.id}-actions`} className="flex items-center gap-2">
+        <select
+          aria-label={`Role for ${user.name}`}
+          value={roleDrafts[user.id] ?? user.role}
+          disabled={savingId === user.id}
+          onChange={event => setRoleDrafts(current => ({ ...current, [user.id]: event.target.value as Role }))}
+          className="rounded border border-slate-300 bg-white px-2 py-1 text-xs disabled:opacity-50"
+        >{roles.map(role => <option key={role} value={role}>{role}</option>)}</select>
+        <button
+          type="button"
+          disabled={savingId === user.id || (roleDrafts[user.id] ?? user.role) === user.role}
+          onClick={() => void saveRole(user)}
+          className="rounded bg-navy px-2.5 py-1 text-xs font-medium text-white disabled:opacity-40"
+        >{savingId === user.id ? 'Saving…' : 'Save role'}</button>
       </div>
+      : <span key={`${user.id}-readonly`} className="text-xs text-slate-500">Read only</span>,
+  ])
 
-      {/* Team Roster Card */}
-      <Card
-        title="Organization Members & Role Assignments"
-        sub="Role modifications are restricted to verified administrators and logged to audit tables"
-      >
-        <Table
-          head={['Team Member', 'Email Address', 'Access Tier', 'Operational Authority']}
-          rows={users.map((u) => [
-            <div key="name" className="flex items-center gap-2.5">
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#243607]/10 text-xs font-bold text-[#243607]">
-                {u.name.charAt(0)}
-              </div>
-              <span className="font-bold text-xs text-[#30280D]">{u.name}</span>
-            </div>,
-            <span key="email" className="font-mono text-xs text-[#30280D]/70">{u.email}</span>,
-            <Badge key="role" t={u.role === 'admin' ? 'warn' : u.role === 'dispatcher' ? 'ok' : 'mute'}>
-              {u.role.toUpperCase()}
-            </Badge>,
-            <span key="auth" className="text-xs text-[#30280D]/75">
-              {u.role === 'admin'
-                ? 'Full system authority, team management, and disruption execution'
-                : u.role === 'dispatcher'
-                ? 'Can intake, preview, and confirm route disruption replans'
-                : 'Read-only access to plans, fleet grid, and manifest records'}
-            </span>,
-          ])}
-        />
-      </Card>
-
-      {/* Security Policies Info Box */}
-      <div className="rounded-xl border border-[#30280D]/10 bg-[#f8f9f4] p-4 text-xs text-[#30280D]/80 flex items-start gap-3">
-        <Lock size={17} className="text-[#243607] shrink-0 mt-0.5" />
-        <div>
-          <span className="font-bold text-[#30280D] block mb-0.5">Database Trigger Enforcement</span>
-          <span>
-            Self-promotion is prohibited by PostgreSQL trigger <code className="rounded bg-black/06 px-1 font-mono text-[11px]">guard_user_role_mutation()</code>. Only users with the <code className="font-mono">admin</code> role can modify organizational team roles.
-          </span>
-        </div>
-      </div>
-    </div>
-  )
+  return <>
+    <PageHead title="Users" sub={isDemoMode ? 'Sample team profiles (demo mode)' : 'Profiles in your organization'} />
+    <Card
+      title={isDemoMode ? 'Sample team' : 'Organization team'}
+      action={<button type="button" onClick={() => void load()} disabled={loading || savingId !== ''} className="rounded border border-slate-300 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50">Refresh</button>}
+    >
+      {loading ? <State kind="loading" text="Loading organization profiles…" />
+        : error && profiles === null ? <State kind="error" text={error} />
+          : profiles === null ? <State kind="error" text="Profile data is unavailable. Refresh to try again." />
+            : profiles.length === 0 ? <State kind="empty" text="No user profiles are registered for this organization." />
+              : <>
+                <div className="mb-4 grid gap-3 sm:grid-cols-3">
+                  {roles.map(role => <MetricCard key={role} label={role} value={profiles.filter(user => user.role === role).length} sub="Organization profiles" />)}
+                </div>
+                {error && <State kind="error" text={error} />}
+                {success && <State kind="success" text={success} />}
+                {!isDemoMode && <Table head={['Name', 'Email', 'Role', 'Administration']} rows={rows} />}
+                {isDemoMode && <Table head={['Name', 'Email', 'Role']} rows={profiles.map(user => [user.name, user.email || 'Email unavailable', <Badge key={`${user.id}-role`} t={user.role === 'admin' ? 'warn' : user.role === 'dispatcher' ? 'ok' : 'mute'}>{user.role}</Badge>])} />}
+                <p className="mt-3 text-xs text-slate-500">
+                  {isDemoMode
+                    ? 'Sample profiles are read only. No accounts or roles are changed in demo mode.'
+                    : 'This page manages existing profiles only. New Supabase Auth accounts must be created through a trusted administrator invitation flow.'}
+                </p>
+              </>}
+    </Card>
+  </>
 }

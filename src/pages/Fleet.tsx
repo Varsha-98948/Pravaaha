@@ -1,140 +1,209 @@
-import { Card, PageHead, Badge, Table, MetricCard } from '../components/ui'
-import { vehicles, locName, originalPlan } from '../data/demo'
-import { fmtTime } from '../utils/time'
-import { Truck, BatteryCharging, ShieldCheck, MapPin, Gauge } from 'lucide-react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Badge, Card, PageHead, State, Table, MetricCard } from '../components/ui'
+import { getLocations, getVehicles, saveLocation, saveVehicle } from '../services/persistenceService'
+import { isDemoMode } from '../services/supabase'
+import type { Location, UserProfile, Vehicle } from '../types'
 
-export default function Fleet() {
-  const totalCapacity = vehicles.reduce((sum, v) => sum + v.capacity, 0)
-  const activeCount = vehicles.filter((v) => v.status === 'active').length
+export default function Fleet({ profile = null }: { profile?: UserProfile | null }) {
+  const [vehicles, setVehicles] = useState<Vehicle[] | null>(null)
+  const [locations, setLocations] = useState<Location[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [formError, setFormError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [saving, setSaving] = useState<'location' | 'vehicle' | ''>('')
+  const [locationName, setLocationName] = useState('')
+  const [locationKind, setLocationKind] = useState<Location['kind']>('depot')
+  const [vehicleName, setVehicleName] = useState('')
+  const [capacity, setCapacity] = useState('20')
+  const [depotId, setDepotId] = useState('')
+  const [shiftStart, setShiftStart] = useState('0')
+  const [shiftEnd, setShiftEnd] = useState('480')
+  const canWrite = !isDemoMode && (profile?.role === 'admin' || profile?.role === 'dispatcher')
 
-  return (
-    <div className="space-y-6">
-      <PageHead
-        title="Fleet Management Grid"
-        sub="Vehicle capacities, operational shift boundaries, depot home stations, and mechanical status."
-        badge={
-          <Badge t="ok" dot>
-            {activeCount}/{vehicles.length} Units Operational
-          </Badge>
-        }
-      />
+  const load = useCallback(async (): Promise<boolean> => {
+    setError('')
+    setLoading(true)
+    if (isDemoMode) {
+      try {
+        const samples = await import('../data/demo')
+        setVehicles(samples.vehicles)
+        setLocations(samples.locations)
+        return true
+      } catch (cause) {
+        setVehicles(null)
+        setLocations([])
+        setError((cause as Error).message || 'Unable to load demo fleet.')
+        return false
+      } finally {
+        setLoading(false)
+      }
+    }
+    if (!profile?.orgId) {
+      setVehicles(null)
+      setLocations([])
+      setLoading(false)
+      setError('Your organization profile is unavailable. Sign out and sign in again, or contact your administrator.')
+      return false
+    }
 
-      {/* Fleet Overview Metrics */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <MetricCard
-          label="Total Fleet Units"
-          value={vehicles.length}
-          sub="3 dispatch vehicles available"
-          icon={<Truck size={18} />}
-          trend="100% Ready"
-          trendType="positive"
-        />
-        <MetricCard
-          label="Cumulative Payload Capacity"
-          value={`${totalCapacity} units`}
-          sub="Van & medium truck cargo volume"
-          icon={<Gauge size={18} />}
-          trend="Nominal"
-          trendType="neutral"
-        />
-        <MetricCard
-          label="Home Depot Terminal"
-          value={locName('depot')}
-          sub="All routes originate & return here"
-          icon={<MapPin size={18} />}
-          trend="Hub Central"
-          trendType="positive"
-        />
-      </div>
+    try {
+      const [organizationVehicles, organizationLocations] = await Promise.all([
+        getVehicles(profile.orgId),
+        getLocations(profile.orgId),
+      ])
+      setVehicles(organizationVehicles)
+      setLocations(organizationLocations)
+      return true
+    } catch (cause) {
+      setVehicles(null)
+      setLocations([])
+      setError((cause as Error).message || 'Unable to load organization fleet.')
+      return false
+    } finally {
+      setLoading(false)
+    }
+  }, [profile?.orgId])
 
-      {/* Spatial Vehicle Detail Cards */}
-      <div className="grid gap-5 md:grid-cols-3">
-        {vehicles.map((v) => {
-          const route = originalPlan.routes.find((r) => r.vehicleId === v.id)
-          const load = route?.load ?? 0
-          const stopsCount = route?.stops.length ?? 0
-          const pct = Math.round((load / v.capacity) * 100)
+  useEffect(() => { void load() }, [load])
 
-          return (
-            <Card
-              key={v.id}
-              title={
-                <div className="flex items-center gap-2">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#243607]/10 text-[#243607]">
-                    <Truck size={16} />
-                  </div>
-                  <div>
-                    <span className="font-bold text-sm text-[#30280D]">{v.name}</span>
-                    <span className="text-[10px] text-[#30280D]/50 font-mono block">ID: {v.id}</span>
-                  </div>
-                </div>
-              }
-              action={
-                <Badge t={v.status === 'active' ? 'ok' : 'bad'}>
-                  {v.status.toUpperCase()}
-                </Badge>
-              }
-            >
-              {/* Capacity Usage Gauge */}
-              <div className="space-y-2 mb-4">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[#30280D]/70 font-medium">Payload Volume:</span>
-                  <span className="font-mono font-bold text-[#30280D]">
-                    {load} / {v.capacity} units ({pct}%)
-                  </span>
-                </div>
-                <div className="h-2.5 w-full rounded-full bg-[#30280D]/10 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-[#243607] to-[#354e0c] transition-all duration-300"
-                    style={{ width: `${Math.min(100, pct)}%` }}
-                  />
-                </div>
-              </div>
+  const createLocation = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setFormError('')
+    setSuccess('')
+    if (!canWrite || !profile) {
+      setFormError('Only administrators and dispatchers can create organization locations.')
+      return
+    }
+    const name = locationName.trim()
+    if (!name) {
+      setFormError('Enter a location name.')
+      return
+    }
+    setSaving('location')
+    try {
+      await saveLocation({ id: crypto.randomUUID(), name, kind: locationKind }, profile.orgId, profile)
+      const refreshed = await load()
+      setLocationName('')
+      if (refreshed) setSuccess(`${name} was saved and the organization locations were refreshed.`)
+      else setFormError(`${name} was saved, but the locations could not be refreshed. Use Refresh to reload the list.`)
+    } catch (cause) {
+      setFormError((cause as Error).message || 'Unable to save this location. Check the form and your organization permissions.')
+    } finally {
+      setSaving('')
+    }
+  }
 
-              {/* Shift Information */}
-              <div className="space-y-2 rounded-xl bg-[#f2f3ec] p-3 text-xs text-[#30280D]/80">
-                <div className="flex justify-between">
-                  <span className="text-[#30280D]/60">Operational Shift:</span>
-                  <span className="font-semibold text-[#30280D]">
-                    {fmtTime(v.shiftStart)} – {fmtTime(v.shiftEnd)} ({v.shiftEnd - v.shiftStart}m)
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#30280D]/60">Home Base Depot:</span>
-                  <span className="font-semibold text-[#30280D]">{locName(v.depotId)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#30280D]/60">Active Deliveries:</span>
-                  <span className="font-bold text-[#243607]">{stopsCount} stops scheduled</span>
-                </div>
-              </div>
-            </Card>
-          )
-        })}
-      </div>
+  const createVehicle = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setFormError('')
+    setSuccess('')
+    if (!canWrite || !profile) {
+      setFormError('Only administrators and dispatchers can create organization vehicles.')
+      return
+    }
+    const name = vehicleName.trim()
+    const parsedCapacity = Number(capacity)
+    const parsedShiftStart = Number(shiftStart)
+    const parsedShiftEnd = Number(shiftEnd)
+    if (!name || !depotId || !Number.isInteger(parsedCapacity) || parsedCapacity <= 0
+      || !Number.isInteger(parsedShiftStart) || !Number.isInteger(parsedShiftEnd) || parsedShiftEnd <= parsedShiftStart) {
+      setFormError('Enter a vehicle name, choose a depot, provide positive integer capacity, and set an end time after the start time.')
+      return
+    }
+    setSaving('vehicle')
+    try {
+      await saveVehicle({
+        id: crypto.randomUUID(), name, capacity: parsedCapacity, depotId,
+        shiftStart: parsedShiftStart, shiftEnd: parsedShiftEnd, status: 'active',
+      }, profile.orgId, profile)
+      const refreshed = await load()
+      setVehicleName('')
+      if (refreshed) setSuccess(`${name} was saved and the organization fleet was refreshed.`)
+      else setFormError(`${name} was saved, but the fleet could not be refreshed. Use Refresh to reload the list.`)
+    } catch (cause) {
+      setFormError((cause as Error).message || 'Unable to save this vehicle. Verify its depot and your organization permissions.')
+    } finally {
+      setSaving('')
+    }
+  }
 
-      {/* Complete Registry Table */}
-      <Card title="Vehicle Specifications & Dispatch Register">
-        <Table
-          head={['Vehicle Name & ID', 'Capacity Limit', 'Home Depot', 'Operating Shift', 'Operational Status']}
-          rows={vehicles.map((v) => [
-            <div key="name">
-              <span className="font-bold text-xs text-[#30280D] block">{v.name}</span>
-              <span className="font-mono text-[11px] text-[#30280D]/50">ID: {v.id}</span>
-            </div>,
-            <span key="cap" className="font-mono font-bold text-xs text-[#30280D]">
-              {v.capacity} units
-            </span>,
-            locName(v.depotId),
-            <span key="shift" className="font-mono text-xs">
-              {fmtTime(v.shiftStart)} – {fmtTime(v.shiftEnd)} ({v.shiftEnd - v.shiftStart} mins)
-            </span>,
-            <Badge key="status" t={v.status === 'active' ? 'ok' : 'bad'}>
-              {v.status}
-            </Badge>,
-          ])}
-        />
+  const locationNames = new Map(locations.map(location => [location.id, location.name]))
+  const depotName = (id: string) => locationNames.get(id) ?? id
+  const depots = locations.filter(location => location.kind === 'depot')
+
+  return <>
+    <PageHead title="Fleet" sub={isDemoMode ? 'Sample vehicles, capacity and shifts (demo mode)' : 'Vehicles and locations in your organization'} />
+    <div className="mb-4 flex justify-end">
+      <button type="button" onClick={() => void load()} disabled={loading || saving !== ''} className="rounded border border-slate-300 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50">Refresh</button>
+    </div>
+
+    {formError && <State kind="error" text={formError} />}
+    {success && <State kind="success" text={success} />}
+    {isDemoMode
+      ? <Card title="Demo mode"><State kind="empty" text="Sample fleet records are read only. Connect an authenticated Supabase organization to create locations or vehicles." /></Card>
+      : canWrite && <div className="mb-4 grid gap-4 lg:grid-cols-2">
+        <Card title="Create location">
+          <form className="grid gap-3 sm:grid-cols-2" onSubmit={event => void createLocation(event)}>
+            <label className="text-xs text-slate-600">Name
+              <input required maxLength={200} value={locationName} onChange={event => setLocationName(event.target.value)} className="mt-1 w-full rounded border border-slate-300 p-2 text-sm" />
+            </label>
+            <label className="text-xs text-slate-600">Kind
+              <select value={locationKind} onChange={event => setLocationKind(event.target.value as Location['kind'])} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm">
+                <option value="depot">Depot</option><option value="customer">Customer</option>
+              </select>
+            </label>
+            <button type="submit" disabled={saving !== '' || loading} className="rounded bg-navy px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{saving === 'location' ? 'Saving…' : 'Create location'}</button>
+          </form>
+        </Card>
+
+        <Card title="Create vehicle">
+          <form className="grid gap-3 sm:grid-cols-2" onSubmit={event => void createVehicle(event)}>
+            <label className="text-xs text-slate-600">Vehicle name
+              <input required maxLength={200} value={vehicleName} onChange={event => setVehicleName(event.target.value)} className="mt-1 w-full rounded border border-slate-300 p-2 text-sm" />
+            </label>
+            <label className="text-xs text-slate-600">Depot
+              <select required value={depotId} onChange={event => setDepotId(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm">
+                <option value="">Select depot</option>{depots.map(depot => <option key={depot.id} value={depot.id}>{depot.name}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-slate-600">Capacity
+              <input type="number" required min="1" step="1" value={capacity} onChange={event => setCapacity(event.target.value)} className="mt-1 w-full rounded border border-slate-300 p-2 text-sm" />
+            </label>
+            <label className="text-xs text-slate-600">Shift starts (minutes)
+              <input type="number" required step="1" value={shiftStart} onChange={event => setShiftStart(event.target.value)} className="mt-1 w-full rounded border border-slate-300 p-2 text-sm" />
+            </label>
+            <label className="text-xs text-slate-600">Shift ends (minutes)
+              <input type="number" required step="1" value={shiftEnd} onChange={event => setShiftEnd(event.target.value)} className="mt-1 w-full rounded border border-slate-300 p-2 text-sm" />
+            </label>
+            <button type="submit" disabled={saving !== '' || loading || depots.length === 0} className="self-end rounded bg-navy px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{saving === 'vehicle' ? 'Saving…' : 'Create vehicle'}</button>
+            {depots.length === 0 && <p className="text-xs text-amber-800 sm:col-span-2">Create a depot location first; vehicles must reference a depot in this organization.</p>}
+          </form>
+        </Card>
+      </div>}
+
+    {!loading && !error && vehicles && <div className="mb-4 grid gap-3 sm:grid-cols-3">
+      <MetricCard label="Organization vehicles" value={vehicles.length} sub="Persisted fleet records" />
+      <MetricCard label="Active vehicles" value={vehicles.filter(vehicle => vehicle.status === 'active').length} sub="Available fleet" />
+      <MetricCard label="Locations" value={locations.length} sub="Depots and customers" />
+    </div>}
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card title={isDemoMode ? 'Sample locations' : 'Organization locations'}>
+        {loading ? <State kind="loading" text="Loading organization locations…" />
+          : error ? <State kind="error" text={error} />
+            : locations.length === 0 ? <State kind="empty" text="No locations are registered. Create a depot before adding vehicles, and customer locations before adding deliveries." />
+              : <Table head={['Name', 'Kind']} rows={locations.map(location => [location.name, <Badge key={`${location.id}-kind`} t={location.kind === 'depot' ? 'ok' : 'mute'}>{location.kind}</Badge>])} />}
+      </Card>
+      <Card title={isDemoMode ? 'Sample fleet' : 'Organization fleet'}>
+        {loading ? <State kind="loading" text="Loading vehicles from your organization…" />
+          : error ? <State kind="error" text={error} />
+            : vehicles === null ? <State kind="error" text="Fleet data is unavailable. Refresh to try again." />
+              : vehicles.length === 0 ? <State kind="empty" text="No vehicles are registered for this organization yet." />
+                : <Table head={['Vehicle', 'Capacity', 'Depot', 'Shift', 'Status']} rows={vehicles.map(vehicle => [
+                  vehicle.name, vehicle.capacity, depotName(vehicle.depotId), `${vehicle.shiftStart}–${vehicle.shiftEnd} min`,
+                  <Badge key={`${vehicle.id}-status`} t={vehicle.status === 'active' ? 'ok' : 'bad'}>{vehicle.status}</Badge>,
+                ])} />}
       </Card>
     </div>
-  )
+  </>
 }

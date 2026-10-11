@@ -1,197 +1,97 @@
-import { useState } from 'react'
-import { Card, PageHead, Badge, Table, MetricCard, SpatialButton } from '../components/ui'
-import { originalPlan, revisedPlan, vehicles, deliveries, locName } from '../data/demo'
+import { useCallback, useEffect, useState } from 'react'
+import { Card, PageHead, Badge, State, Table, MetricCard } from '../components/ui'
 import { comparePlans } from '../engine/compare'
+import { loadPlanComparisonData, type PlanComparisonData } from '../services/overviewService'
+import { isDemoMode } from '../services/supabase'
+import type { DeliveryPlan, UserProfile } from '../types'
 import { fmtTime } from '../utils/time'
-import { GitCompare, CheckCircle2, ArrowRightLeft, AlertOctagon, Filter } from 'lucide-react'
 
-const findStop = (p: typeof originalPlan, id: string) =>
-  p.routes
-    .flatMap((r) =>
-      r.stops.map((s) => ({
-        ...s,
-        vehicleName: vehicles.find((v) => v.id === r.vehicleId)?.name ?? r.vehicleId,
-      }))
-    )
-    .find((s) => s.deliveryId === id)
+export default function Compare({ profile = null }: { profile?: UserProfile | null }) {
+  const [data, setData] = useState<PlanComparisonData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-export default function Compare() {
-  const [filter, setFilter] = useState<'all' | 'kept' | 'moved' | 'broken'>('all')
+  const load = useCallback(async () => {
+    setError('')
+    setLoading(true)
+    try {
+      if (isDemoMode) {
+        const samples = await import('../data/demo')
+        setData({
+          deliveries: samples.deliveries,
+          vehicles: samples.vehicles,
+          locations: samples.locations,
+          originalPlan: samples.originalPlan,
+          revisedPlan: samples.revisedPlan,
+        })
+      } else {
+        if (!profile?.orgId) throw new Error('Your organization profile is unavailable. Sign out and sign in again, or contact your administrator.')
+        setData(await loadPlanComparisonData(profile.orgId))
+      }
+    } catch (cause) {
+      setData(null)
+      setError((cause as Error).message || 'Unable to load saved organization plans.')
+    } finally {
+      setLoading(false)
+    }
+  }, [profile?.orgId])
 
-  const comparison = comparePlans(originalPlan, revisedPlan)
+  useEffect(() => { void load() }, [load])
 
-  const filteredDeliveries = deliveries.filter((d) => {
-    const decision = comparison.decisions[d.id]
-    if (filter === 'all') return true
-    return decision === filter
-  })
+  const comparison = data ? comparePlans(data.originalPlan, data.revisedPlan) : null
+  const vehiclesById = new Map((data?.vehicles ?? []).map(vehicle => [vehicle.id, vehicle.name]))
+  const locationNames = new Map((data?.locations ?? []).map(location => [location.id, location.name]))
+  const stopsByPlan = (plan: DeliveryPlan) => new Map(plan.routes.flatMap(route => route.stops.map(stop => [stop.deliveryId, {
+    vehicle: vehiclesById.get(route.vehicleId) ?? route.vehicleId,
+    time: Number.isFinite(stop.serviceStart) ? fmtTime(stop.serviceStart) : 'Time unavailable',
+  }] as const)))
+  const originalStops = data ? stopsByPlan(data.originalPlan) : new Map()
+  const revisedStops = data ? stopsByPlan(data.revisedPlan) : new Map()
+  const originalUnassigned = new Map((data?.originalPlan.unassigned ?? []).map(item => [item.deliveryId, item]))
+  const revisedUnassigned = new Map((data?.revisedPlan.unassigned ?? []).map(item => [item.deliveryId, item]))
+  const comparedIds = data ? [...new Set([
+    ...originalStops.keys(), ...revisedStops.keys(),
+    ...data.originalPlan.unassigned.map(item => item.deliveryId),
+    ...data.revisedPlan.unassigned.map(item => item.deliveryId),
+    ...data.deliveries.map(delivery => delivery.id),
+  ])].sort() : []
+  const deliveriesById = new Map((data?.deliveries ?? []).map(delivery => [delivery.id, delivery]))
 
-  return (
-    <div className="space-y-6">
-      <PageHead
-        title="Plan Comparison & Impact Matrix"
-        sub="Compare baseline schedule against revised plan. Evaluates delivery continuity, reassignments, and broken stops."
-        badge={
-          <Badge t="warn" dot>
-            Scenario: Van 2 Breakdown at 09:30
-          </Badge>
-        }
-      />
-
-      {/* Decision Summary KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <MetricCard
-          label="Kept Deliveries"
-          value={comparison.counts.kept}
-          sub="Same vehicle, timing preserved"
-          icon={<CheckCircle2 size={18} />}
-          trend="Uninterrupted"
-          trendType="positive"
-          active={filter === 'kept'}
-          onClick={() => setFilter(filter === 'kept' ? 'all' : 'kept')}
-        />
-        <MetricCard
-          label="Moved Deliveries"
-          value={comparison.counts.moved}
-          sub="Reassigned to alternate fleet unit"
-          icon={<ArrowRightLeft size={18} />}
-          trend="Rerouted"
-          trendType="neutral"
-          active={filter === 'moved'}
-          onClick={() => setFilter(filter === 'moved' ? 'all' : 'moved')}
-        />
-        <MetricCard
-          label="Broken / Unassigned"
-          value={comparison.counts.broken}
-          sub="Capacity or window conflict"
-          icon={<AlertOctagon size={18} />}
-          trend={comparison.counts.broken > 0 ? 'Critical' : 'None'}
-          trendType={comparison.counts.broken > 0 ? 'negative' : 'positive'}
-          active={filter === 'broken'}
-          onClick={() => setFilter(filter === 'broken' ? 'all' : 'broken')}
-        />
-      </div>
-
-      {/* Side-by-Side High-Level Plan Stats */}
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card
-          title="Baseline Plan (Original)"
-          sub="3 active vehicles, pre-disruption state"
-        >
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <div className="rounded-lg bg-[#f2f3ec] p-3">
-              <span className="text-xs text-[#30280D]/60 block font-medium">Routes</span>
-              <span className="text-xl font-bold text-[#30280D]">{originalPlan.routes.length}</span>
-            </div>
-            <div className="rounded-lg bg-[#f2f3ec] p-3">
-              <span className="text-xs text-[#30280D]/60 block font-medium">Total Stops</span>
-              <span className="text-xl font-bold text-[#243607]">
-                {originalPlan.routes.reduce((acc, r) => acc + r.stops.length, 0)}
-              </span>
-            </div>
-            <div className="rounded-lg bg-[#f2f3ec] p-3">
-              <span className="text-xs text-[#30280D]/60 block font-medium">Unassigned</span>
-              <span className="text-xl font-bold text-[#30280D]">
-                {originalPlan.unassigned.length}
-              </span>
-            </div>
-          </div>
-        </Card>
-
-        <Card
-          title="Revised Plan (Post-Disruption)"
-          sub="Van 2 failed at 09:30 · Dynamic replan applied"
-        >
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <div className="rounded-lg bg-[#f2f3ec] p-3">
-              <span className="text-xs text-[#30280D]/60 block font-medium">Routes</span>
-              <span className="text-xl font-bold text-[#30280D]">{revisedPlan.routes.length}</span>
-            </div>
-            <div className="rounded-lg bg-[#f2f3ec] p-3">
-              <span className="text-xs text-[#30280D]/60 block font-medium">Total Stops</span>
-              <span className="text-xl font-bold text-[#91696E]">
-                {revisedPlan.routes.reduce((acc, r) => acc + r.stops.length, 0)}
-              </span>
-            </div>
-            <div className="rounded-lg bg-[#f2f3ec] p-3">
-              <span className="text-xs text-[#30280D]/60 block font-medium">Unassigned</span>
-              <span className="text-xl font-bold text-[#91696E]">
-                {revisedPlan.unassigned.length}
-              </span>
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      {/* Delivery-Level Comparison Matrix */}
-      <Card
-        title="Delivery-by-Delivery Decision Matrix"
-        sub="Line-item status of every order across both plans"
-        action={
-          <div className="flex items-center gap-1.5 bg-[#f2f3ec] p-1 rounded-lg border border-[#30280D]/10">
-            <Filter size={13} className="text-[#30280D]/60 ml-1.5" />
-            {(['all', 'kept', 'moved', 'broken'] as const).map((opt) => (
-              <button
-                key={opt}
-                onClick={() => setFilter(opt)}
-                className={`px-2.5 py-0.5 text-xs font-semibold rounded capitalize transition-all ${
-                  filter === opt
-                    ? 'bg-[#243607] text-white shadow-sm'
-                    : 'text-[#30280D]/70 hover:bg-white'
-                }`}
-              >
-                {opt}
-              </button>
-            ))}
-          </div>
-        }
-      >
-        <Table
-          head={['Delivery ID & Location', 'Original Plan', 'Revised Plan', 'Decision', 'Operational Rationale']}
-          rows={filteredDeliveries.map((d) => {
-            const orig = findStop(originalPlan, d.id)
-            const rev = findStop(revisedPlan, d.id)
-            const decision = comparison.decisions[d.id]
-            const reason = comparison.reasons[d.id] || 'Nominal status'
-
-            return [
-              <div key="del">
-                <span className="font-mono font-bold text-xs text-[#243607] block">{d.id}</span>
-                <span className="font-medium text-xs text-[#30280D]">{locName(d.locationId)}</span>
-              </div>,
-              orig ? (
-                <span key="orig" className="text-xs">
-                  <span className="font-semibold text-[#30280D]">{orig.vehicleName}</span>
-                  <span className="text-[#30280D]/60 block">Serv: {fmtTime(orig.serviceStart)}</span>
-                </span>
-              ) : (
-                <span key="orig" className="text-xs text-[#30280D]/40">—</span>
-              ),
-              rev ? (
-                <span key="rev" className="text-xs">
-                  <span className="font-semibold text-[#243607]">{rev.vehicleName}</span>
-                  <span className="text-[#30280D]/60 block">Serv: {fmtTime(rev.serviceStart)}</span>
-                </span>
-              ) : (
-                <Badge key="rev" t="bad">Unassigned</Badge>
-              ),
-              decision ? (
-                <Badge
-                  key="dec"
-                  t={decision === 'kept' ? 'ok' : decision === 'moved' ? 'warn' : 'bad'}
-                >
-                  {decision.toUpperCase()}
-                </Badge>
-              ) : (
-                '—'
-              ),
-              <span key="reason" className="text-xs text-[#30280D]/75">
-                {reason}
-              </span>,
-            ]
-          })}
-        />
-      </Card>
+  return <>
+    <PageHead title="Original vs revised" sub={isDemoMode ? 'Compare the sample plans (demo mode)' : 'Compare the two most recently saved plans in your organization'} />
+    <div className="mb-4 flex justify-end">
+      <button type="button" onClick={() => void load()} disabled={loading} className="rounded border border-slate-300 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50">Refresh</button>
     </div>
-  )
+    {loading ? <State kind="loading" text="Loading saved organization plans…" />
+      : error ? <State kind="error" text={error} />
+        : !data ? <State kind="empty" text={isDemoMode ? 'Plan comparison is unavailable.' : 'At least two saved plans are required before they can be compared.'} />
+          : comparison ? <>
+            <div className="mb-4 flex flex-wrap gap-3">
+              {(['kept', 'moved', 'broken'] as const).map(key => <MetricCard key={key} label={key} value={comparison.counts[key]} sub="Saved plan comparison" />)}
+            </div>
+            <Card>
+              <div className="mb-3 text-sm text-slate-600">{data.originalPlan.label} → {data.revisedPlan.label}</div>
+              {comparedIds.length === 0
+                ? <State kind="empty" text="These saved plans contain no scheduled or unassigned deliveries to compare." />
+                : <Table head={['Delivery', 'Original', 'Revised', 'Decision']} rows={comparedIds.map(id => {
+                  const delivery = deliveriesById.get(id)
+                  const name = delivery ? locationNames.get(delivery.locationId) ?? delivery.locationId : 'Delivery record unavailable'
+                  const original = originalStops.get(id)
+                  const revised = revisedStops.get(id)
+                  const originalMiss = originalUnassigned.get(id)
+                  const revisedMiss = revisedUnassigned.get(id)
+                  const decision = comparison.decisions[id]
+                  const describeUnassigned = (item: typeof originalMiss) => item
+                    ? `Unassigned: ${item.detail || item.reason}`
+                    : 'Not in either plan'
+                  return [
+                    `${id} ${name}`,
+                    original ? `${original.vehicle} ${original.time}` : describeUnassigned(originalMiss),
+                    revised ? `${revised.vehicle} ${revised.time}` : describeUnassigned(revisedMiss),
+                    decision ? <Badge key={`${id}-decision`} t={decision === 'kept' ? 'ok' : decision === 'moved' ? 'warn' : 'bad'}>{decision}</Badge> : 'Not compared',
+                  ]
+                })} />}
+            </Card>
+          </> : <State kind="empty" text="Plan comparison is unavailable." />}
+  </>
 }

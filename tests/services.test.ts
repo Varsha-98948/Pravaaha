@@ -81,6 +81,9 @@ import {
   confirmDisruption,
   interpretIncidentPreview,
 } from '../src/services/disruptionService'
+import { getCurrentUserProfile } from '../src/services/authService'
+import { getDeliveries, getDeliveryPlan, getDisruptions, getVehicles, listDeliveryPlans, saveDelivery, saveDeliveryPlan, updateVehicleStatus } from '../src/services/persistenceService'
+import { travelMatrixFromPersistedPlan } from '../src/services/replanningService'
 import type { DisruptionInterpreter } from '../src/services/disruptionInterpreter'
 
 describe('Data Integration: Field Mappers', () => {
@@ -822,5 +825,286 @@ describe('Migration 003 compat: confirm_disruption_tx RPC parameter types', () =
       p_payload: { delivery: interpreted.event.delivery },
       p_at_min: 120,
     })
+  })
+})
+
+describe('Authenticated organization data reads', () => {
+  it('loads the auth user profile by the verified Supabase user ID', async () => {
+    const eq = vi.fn().mockReturnValue({
+      single: vi.fn().mockResolvedValue({
+        data: { id: 'auth-user-1', org_id: 'org-1', name: 'Dispatcher', email: null, role: 'dispatcher' },
+        error: null,
+      }),
+    })
+    const select = vi.fn().mockReturnValue({ eq })
+    const from = vi.fn().mockReturnValue({ select })
+    getSupabaseClientMock.mockReturnValue({
+      auth: { getUser: vi.fn().mockResolvedValue({ data: { user: { id: 'auth-user-1', email: 'dispatch@example.com' } }, error: null }) },
+      from,
+    })
+
+    const profile = await getCurrentUserProfile()
+
+    expect(from).toHaveBeenCalledWith('profiles')
+    expect(eq).toHaveBeenCalledWith('id', 'auth-user-1')
+    expect(profile).toEqual({ id: 'auth-user-1', orgId: 'org-1', name: 'Dispatcher', email: 'dispatch@example.com', role: 'dispatcher' })
+  })
+
+  it('reads and maps deliveries scoped to the authenticated organization', async () => {
+    const eq = vi.fn().mockResolvedValue({
+      data: [{
+        id: 'delivery-1',
+        org_id: 'org-1',
+        location_id: 'location-1',
+        size: 12,
+        service_min: 15,
+        window_start: 30,
+        window_end: 120,
+        priority: 'urgent',
+      }],
+      error: null,
+    })
+    const select = vi.fn().mockReturnValue({ eq })
+    const from = vi.fn().mockReturnValue({ select })
+    getSupabaseClientMock.mockReturnValue({ from })
+
+    const rows = await getDeliveries('org-1')
+
+    expect(from).toHaveBeenCalledWith('deliveries')
+    expect(select).toHaveBeenCalledWith('id, org_id, location_id, size, service_min, window_start, window_end, priority')
+    expect(eq).toHaveBeenCalledWith('org_id', 'org-1')
+    expect(rows).toEqual([{
+      id: 'delivery-1',
+      locationId: 'location-1',
+      size: 12,
+      serviceMin: 15,
+      window: { start: 30, end: 120 },
+      priority: 'urgent',
+    }])
+  })
+
+  it('reads vehicles using the migrated columns and organization filter', async () => {
+    const eq = vi.fn().mockResolvedValue({
+      data: [{
+        id: 'vehicle-live-1', org_id: 'org-1', name: 'North van', capacity: 25,
+        depot_id: 'depot-live', shift_start: 15, shift_end: 420, status: 'active',
+      }],
+      error: null,
+    })
+    const select = vi.fn().mockReturnValue({ eq })
+    const from = vi.fn().mockReturnValue({ select })
+    getSupabaseClientMock.mockReturnValue({ from })
+
+    await expect(getVehicles('org-1')).resolves.toEqual([{
+      id: 'vehicle-live-1', name: 'North van', capacity: 25, depotId: 'depot-live',
+      shiftStart: 15, shiftEnd: 420, status: 'active',
+    }])
+    expect(from).toHaveBeenCalledWith('vehicles')
+    expect(select).toHaveBeenCalledWith('id, org_id, name, capacity, depot_id, shift_start, shift_end, status')
+    expect(eq).toHaveBeenCalledWith('org_id', 'org-1')
+  })
+
+  it('propagates organization vehicle query failures instead of using sample records', async () => {
+    const eq = vi.fn().mockResolvedValue({ data: null, error: { message: 'permission denied' } })
+    const select = vi.fn().mockReturnValue({ eq })
+    getSupabaseClientMock.mockReturnValue({ from: vi.fn().mockReturnValue({ select }) })
+
+    await expect(getVehicles('org-1')).rejects.toThrow('Failed to fetch vehicles: permission denied')
+  })
+
+  it('lists the latest saved plans within the requested organization', async () => {
+    const order = vi.fn().mockResolvedValue({
+      data: [{ id: 'plan-1', label: 'Morning routes', created_at_min: 90, parent_plan_id: null }],
+      error: null,
+    })
+    const eq = vi.fn().mockReturnValue({ order })
+    const select = vi.fn().mockReturnValue({ eq })
+    const from = vi.fn().mockReturnValue({ select })
+    getSupabaseClientMock.mockReturnValue({ from })
+
+    await expect(listDeliveryPlans('org-1')).resolves.toEqual([
+      { id: 'plan-1', label: 'Morning routes', createdAt: 90, parentPlanId: null },
+    ])
+    expect(from).toHaveBeenCalledWith('plans')
+    expect(select).toHaveBeenCalledWith('id, label, created_at_min, parent_plan_id')
+    expect(eq).toHaveBeenCalledWith('org_id', 'org-1')
+    expect(order).toHaveBeenCalledWith('created_at', { ascending: false })
+  })
+
+  it('loads a persisted route plan and stops using text operational IDs and org filters', async () => {
+    const calls: Array<{ table: string; filters: Array<[string, string]> }> = []
+    const from = vi.fn((table: string) => {
+      const query = {
+        filters: [] as Array<[string, string]>,
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn(function (this: typeof query, column: string, value: string) {
+          this.filters.push([column, value])
+          return this
+        }),
+        single: vi.fn(async function (this: typeof query) {
+          calls.push({ table, filters: this.filters })
+          return { data: { id: 'plan-text-1', org_id: 'org-1', label: 'Saved plan', parent_plan_id: null, created_at_min: 60, unassigned: [] }, error: null }
+        }),
+        then: undefined as unknown,
+      }
+      if (table === 'plan_stops') {
+        Object.assign(query, {
+          then: (resolve: (value: unknown) => unknown) => {
+            calls.push({ table, filters: query.filters })
+            return Promise.resolve({
+              data: [{ id: 'stop-text-1', org_id: 'org-1', plan_id: 'plan-text-1', vehicle_id: 'vehicle-text-1', delivery_id: 'delivery-text-1', seq: 0, arrival: 30, service_start: 45, departure: 55, status: 'pending' }],
+              error: null,
+            }).then(resolve)
+          },
+        })
+      }
+      if (table === 'deliveries') {
+        Object.assign(query, {
+          then: (resolve: (value: unknown) => unknown) => {
+            calls.push({ table, filters: query.filters })
+            return Promise.resolve({
+              data: [{ id: 'delivery-text-1', org_id: 'org-1', location_id: 'customer-text-1', size: 7, service_min: 10, window_start: 0, window_end: 120, priority: 'normal' }],
+              error: null,
+            }).then(resolve)
+          },
+        })
+      }
+      return query
+    })
+    getSupabaseClientMock.mockReturnValue({ from })
+
+    const plan = await getDeliveryPlan('plan-text-1', 'org-1')
+
+    expect(plan.id).toBe('plan-text-1')
+    expect(plan.routes).toEqual([{
+      vehicleId: 'vehicle-text-1',
+      stops: [{ deliveryId: 'delivery-text-1', locationId: 'customer-text-1', arrival: 30, serviceStart: 45, departure: 55, waitMin: 15, status: 'pending' }],
+      load: 7,
+    }])
+    expect(calls).toEqual([
+      { table: 'plans', filters: [['id', 'plan-text-1'], ['org_id', 'org-1']] },
+      { table: 'plan_stops', filters: [['plan_id', 'plan-text-1'], ['org_id', 'org-1']] },
+      { table: 'deliveries', filters: [['org_id', 'org-1']] },
+    ])
+  })
+
+  it('loads persisted disruptions within the organization and maps payloads', async () => {
+    const order = vi.fn().mockResolvedValue({
+      data: [{
+        id: 'disruption-text-1', org_id: 'org-1', type: 'vehicle_failure',
+        payload: { vehicleId: 'vehicle-text-1' }, raw_text: 'Vehicle failed',
+        confirmed_by: 'auth-user-1', at_min: 75, confirmed_at: '2026-10-01T12:00:00Z',
+      }],
+      error: null,
+    })
+    const eq = vi.fn().mockReturnValue({ order })
+    const select = vi.fn().mockReturnValue({ eq })
+    const from = vi.fn().mockReturnValue({ select })
+    getSupabaseClientMock.mockReturnValue({ from })
+
+    await expect(getDisruptions('org-1')).resolves.toEqual([
+      { type: 'vehicle_failure', id: 'disruption-text-1', at: 75, vehicleId: 'vehicle-text-1' },
+    ])
+    expect(from).toHaveBeenCalledWith('disruptions')
+    expect(eq).toHaveBeenCalledWith('org_id', 'org-1')
+    expect(order).toHaveBeenCalledWith('at_min', { ascending: true })
+  })
+
+  it('propagates disruption query failures rather than substituting sample events', async () => {
+    const order = vi.fn().mockResolvedValue({ data: null, error: { message: 'RLS denied' } })
+    const eq = vi.fn().mockReturnValue({ order })
+    const select = vi.fn().mockReturnValue({ eq })
+    getSupabaseClientMock.mockReturnValue({ from: vi.fn().mockReturnValue({ select }) })
+
+    await expect(getDisruptions('org-1')).rejects.toThrow('Failed to fetch disruptions: RLS denied')
+  })
+
+  it('derives only observed directed route legs from persisted plan timestamps', () => {
+    const plan: DeliveryPlan = {
+      id: 'plan-1', label: 'Persisted', createdAt: 90, unassigned: [],
+      routes: [{ vehicleId: 'vehicle-1', load: 5, stops: [
+        { deliveryId: 'delivery-1', locationId: 'location-1', arrival: 20, serviceStart: 20, departure: 30, waitMin: 0, status: 'pending' },
+        { deliveryId: 'delivery-2', locationId: 'location-2', arrival: 45, serviceStart: 45, departure: 55, waitMin: 0, status: 'pending' },
+      ] }],
+    }
+    const vehicle: Vehicle = { id: 'vehicle-1', name: 'Van', capacity: 10, depotId: 'depot-1', shiftStart: 5, shiftEnd: 480, status: 'active' }
+
+    expect(travelMatrixFromPersistedPlan(plan, [vehicle])).toEqual({
+      'depot-1': { 'location-1': 15 },
+      'location-1': { 'location-2': 15 },
+    })
+  })
+
+  it('does not allow viewers to save urgent deliveries or replanned routes', async () => {
+    getSupabaseClientMock.mockReturnValue({})
+    const plan: DeliveryPlan = { id: 'plan-1', label: 'Plan', createdAt: 0, routes: [], unassigned: [] }
+    const viewerProfile: UserProfile = { id: 'auth-viewer-1', orgId: 'org-1', name: 'Viewer', email: '', role: 'viewer' }
+
+    await expect(saveDelivery({ id: 'd-1', locationId: 'c1', size: 1, serviceMin: 10, window: { start: 0, end: 60 }, priority: 'urgent' }, 'org-1', viewerProfile))
+      .rejects.toThrow(AuthorizationError)
+    await expect(saveDeliveryPlan(plan, 'org-1', viewerProfile))
+      .rejects.toThrow(AuthorizationError)
+    expect(getSupabaseClientMock).not.toHaveBeenCalled()
+  })
+
+  it('propagates persisted plan header failures before writing stops', async () => {
+    const upsert = vi.fn().mockResolvedValue({ error: { message: 'RLS denied' } })
+    const from = vi.fn((table: string) => table === 'plans' ? { upsert } : { insert: vi.fn() })
+    getSupabaseClientMock.mockReturnValue({ from })
+    const actor: UserProfile = { id: 'auth-admin-1', orgId: 'org-1', name: 'Admin', email: '', role: 'admin' }
+    const plan: DeliveryPlan = { id: 'plan-new', label: 'Replanned', createdAt: 90, routes: [], unassigned: [] }
+
+    await expect(saveDeliveryPlan(plan, 'org-1', actor)).rejects.toThrow('Failed to save plan header: RLS denied')
+    expect(from).toHaveBeenCalledWith('plans')
+    expect(from).not.toHaveBeenCalledWith('plan_stops')
+  })
+
+  it('persists generated plan headers and stops with organization and operational text IDs', async () => {
+    const actor: UserProfile = { id: 'auth-dispatcher-1', orgId: 'org-1', name: 'Dispatcher', email: '', role: 'dispatcher' }
+    const plan: DeliveryPlan = {
+      id: 'plan-replanned-text-1', label: 'Replanned at 90m', createdAt: 90, unassigned: [],
+      routes: [{ vehicleId: 'vehicle-text-1', load: 4, stops: [
+        { deliveryId: 'delivery-text-1', locationId: 'location-text-1', arrival: 30, serviceStart: 30, departure: 40, waitMin: 0, status: 'pending' },
+      ] }],
+    }
+    const upsert = vi.fn().mockResolvedValue({ error: null })
+    const stopInsert = vi.fn().mockResolvedValue({ error: null })
+    const auditInsert = vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: null, error: { message: 'audit unavailable' } }) }) })
+    const from = vi.fn((table: string) => table === 'plans'
+      ? { upsert }
+      : table === 'plan_stops'
+        ? {
+          delete: () => ({ eq: () => ({ eq: vi.fn().mockResolvedValue({ error: null }) }) }),
+          insert: stopInsert,
+        }
+        : { insert: auditInsert })
+    getSupabaseClientMock.mockReturnValue({ from })
+
+    await expect(saveDeliveryPlan(plan, 'org-1', actor)).resolves.toBe(plan)
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ id: 'plan-replanned-text-1', org_id: 'org-1' }))
+    expect(stopInsert).toHaveBeenCalledWith([expect.objectContaining({
+      plan_id: 'plan-replanned-text-1', org_id: 'org-1', vehicle_id: 'vehicle-text-1', delivery_id: 'delivery-text-1',
+    })])
+  })
+
+  it('enforces vehicle status role restrictions and reports RLS-filtered no-op updates', async () => {
+    getSupabaseClientMock.mockReturnValue({})
+    await expect(updateVehicleStatus('vehicle-1', 'org-1', 'failed', 'viewer')).rejects.toThrow(AuthorizationError)
+    expect(getSupabaseClientMock).not.toHaveBeenCalled()
+
+    const maybeSingle = vi.fn().mockResolvedValue({ data: null, error: null })
+    const query = {
+      eq: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      maybeSingle,
+    }
+    const update = vi.fn().mockReturnValue(query)
+    getSupabaseClientMock.mockReturnValue({ from: vi.fn().mockReturnValue({ update }) })
+    await expect(updateVehicleStatus('vehicle-1', 'org-1', 'failed', 'dispatcher'))
+      .rejects.toThrow("Vehicle with id 'vehicle-1' not found.")
+    expect(query.eq).toHaveBeenNthCalledWith(1, 'id', 'vehicle-1')
+    expect(query.eq).toHaveBeenNthCalledWith(2, 'org_id', 'org-1')
+    expect(query.select).toHaveBeenCalledWith('id')
   })
 })
