@@ -2,7 +2,7 @@
  * OpenRouter Client with Strict Free-Only Model Policy and Automatic Failover.
  *
  * Implements:
- * 1. Strict Free-Only Model Verification: only approved models ending in :free or openrouter/free.
+ * 1. Strict Free-Only Model Verification: only catalog-verified zero-priced models.
  * 2. Automatic Failover across three independent account keys.
  * 3. Intelligent error classification (credit exhaustion, rate limits, auth failures, transient errors).
  * 4. Bounded retries: each eligible key attempted at most once per logical request.
@@ -16,17 +16,14 @@ import {
 } from './openrouterKeyManager'
 import { extractJsonFromText } from './aiProvider'
 
-export const DEFAULT_FREE_MODEL = 'google/gemini-2.0-flash-exp:free'
+export const DEFAULT_FREE_MODEL = 'apodex/apodex-1.1-mini:free'
 
 export const DEFAULT_FREE_MODEL_ALLOWLIST = [
-  'google/gemini-2.0-flash-exp:free',
-  'google/gemini-2.0-flash-thinking-exp:free',
-  'meta-llama/llama-3.3-70b-instruct:free',
-  'meta-llama/llama-3.1-8b-instruct:free',
-  'qwen/qwen-2.5-72b-instruct:free',
-  'mistralai/mistral-7b-instruct:free',
+  'apodex/apodex-1.1-mini:free',
   'openrouter/free',
 ]
+
+export const VERIFIED_FREE_MODEL_IDS = new Set(DEFAULT_FREE_MODEL_ALLOWLIST)
 
 /**
  * Parses comma-separated allowlist of approved free models.
@@ -45,22 +42,29 @@ export function parseFreeModelAllowlist(rawList?: string): string[] {
 /**
  * Strictly verifies whether a model ID is an approved free model.
  * Requirements:
- * 1. Model must be non-empty string.
+ * 1. Model must be a non-empty string.
  * 2. Model must be explicitly included in the approved free-model allowlist.
- * 3. Model must explicitly end with ':free' or be 'openrouter/free'.
- * Paid models are NEVER approved.
+ * 3. Model must be one of the model IDs whose zero prompt/completion pricing was
+ *    verified from the OpenRouter model catalog.
  */
 export function isApprovedFreeModel(model: string, allowlist: string[]): boolean {
   if (!model || typeof model !== 'string') return false
   const trimmed = model.trim()
 
-  // Must be in configured allowlist
   if (!allowlist.includes(trimmed)) return false
-
-  // Must end with :free or be openrouter/free
-  if (!trimmed.endsWith(':free') && trimmed !== 'openrouter/free') return false
+  if (!VERIFIED_FREE_MODEL_IDS.has(trimmed)) return false
 
   return true
+}
+
+export function getApprovedFreeModelSequence(model: string, allowlist: string[]): string[] {
+  const seen = new Set<string>()
+  const candidates = [model, ...allowlist].map((m) => m.trim()).filter(Boolean)
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate)) return false
+    seen.add(candidate)
+    return isApprovedFreeModel(candidate, allowlist)
+  })
 }
 
 export interface ClassifiedFailure {
@@ -78,6 +82,27 @@ export function classifyOpenRouterResponse(
   headers?: Headers | Record<string, string | null | undefined>
 ): ClassifiedFailure {
   const lowerBody = (bodyText || '').toLowerCase()
+
+  const modelUnavailableKeywords = [
+    'no endpoints found',
+    'model not found',
+    'no endpoint found',
+    'no eligible endpoint',
+    'no eligible inference endpoint',
+    'model is unavailable',
+    'unsupported model',
+    'invalid model',
+    'does not support feature',
+    'unsupported parameter',
+  ]
+  const isModelUnavailable = modelUnavailableKeywords.some((kw) => lowerBody.includes(kw))
+
+  if (status === 404 || (status === 400 && isModelUnavailable) || (status === 422 && isModelUnavailable)) {
+    return {
+      category: 'model_unavailable',
+      message: `The configured free OpenRouter model is unavailable for this request (${status}).`,
+    }
+  }
 
   // Check for billing / credit exhaustion indicators in message regardless of status
   const creditKeywords = [
@@ -195,6 +220,16 @@ export interface ExecuteOpenRouterParams {
   paidFallbackEnabled?: boolean
 }
 
+export class OpenRouterModelUnavailableError extends Error {
+  constructor(
+    message: string,
+    public readonly unavailableModels: string[]
+  ) {
+    super(message)
+    this.name = 'OpenRouterModelUnavailableError'
+  }
+}
+
 /**
  * Executes an AI interpretation request with OpenRouter using strictly free models
  * and automatic failover across configured key slots.
@@ -222,10 +257,16 @@ export async function executeOpenRouterRequestWithFailover(
     )
   }
 
+  const approvedModels = getApprovedFreeModelSequence(model, allowlist)
+
   if (!isApprovedFreeModel(model, allowlist)) {
     throw new Error(
-      `Free-Only Policy Violation: Model "${model}" is not an approved free model. Only models in the verified free allowlist ending with :free are permitted.`
+      `Free-Only Policy Violation: Model "${model}" is not an approved verified free model. Only zero-priced models in the verified free allowlist are permitted.`
     )
+  }
+
+  if (approvedModels.length === 0) {
+    throw new Error('No approved verified free OpenRouter model is configured.')
   }
 
   // 2. Configuration verification
@@ -236,122 +277,153 @@ export async function executeOpenRouterRequestWithFailover(
     )
   }
 
-  const attemptedSlotIds = new Set<KeySlotId>()
+  const unavailableModels: string[] = []
   let lastClassifiedFailure: ClassifiedFailure | null = null
 
-  // 3. Failover Loop bounded by total configured key count
-  while (attemptedSlotIds.size < configuredCount) {
-    const slot = keyManager.getNextEligibleSlot(attemptedSlotIds)
+  // 3. Model and key failover loops. Model-level failures advance to the next
+  // approved free model without burning through every configured account key.
+  for (const activeModel of approvedModels) {
+    const attemptedSlotIds = new Set<KeySlotId>()
 
-    if (!slot) {
-      // No more healthy/eligible slots available right now
-      break
+    while (attemptedSlotIds.size < configuredCount) {
+      const slot = keyManager.getNextEligibleSlot(attemptedSlotIds)
+
+      if (!slot) {
+        // No more healthy/eligible slots available right now
+        break
+      }
+
+      attemptedSlotIds.add(slot.id)
+
+      // Observability: Log request initiation with safe slot identifier (NEVER the key)
+      console.info(`[OpenRouter] Request initiated for model "${activeModel}" using slot "${slot.id}".`)
+
+      const controller = new AbortController()
+      const timerId = setTimeout(() => controller.abort(), timeoutMs)
+
+      try {
+        const payload = {
+          model: activeModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.1,
+        }
+
+        const res = await fetchImpl(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${slot.key}`,
+            'HTTP-Referer': 'https://reroute.local',
+            'X-Title': 'ReRoute AI Disruption Interpreter',
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        })
+
+        clearTimeout(timerId)
+
+        if (res.ok) {
+          keyManager.recordSuccess(slot.id)
+          console.info(`[OpenRouter] Request succeeded on slot "${slot.id}" with model "${activeModel}".`)
+
+          const data = (await res.json()) as {
+            choices?: Array<{ message?: { content?: string } }>
+          }
+
+          const rawContent = data.choices?.[0]?.message?.content
+          if (!rawContent) {
+            throw new Error('OpenRouter returned an empty choices content.')
+          }
+
+          return extractJsonFromText(rawContent)
+        }
+
+        // Non-OK HTTP response: read error body and classify
+        const errBodyText = await res.text().catch(() => '')
+        const classified = classifyOpenRouterResponse(res.status, errBodyText, res.headers)
+        lastClassifiedFailure = classified
+
+        console.warn(
+          `[OpenRouter] Slot "${slot.id}" failed with category: ${classified.category}. Status: ${res.status}.`
+        )
+
+        // Model/request-specific errors: Do NOT disable key or retry next key
+        if (classified.category === 'model_unavailable') {
+          keyManager.recordFailure(slot.id, classified)
+          unavailableModels.push(activeModel)
+          console.warn(`[OpenRouter] Model "${activeModel}" unavailable. Trying next approved free model if configured.`)
+          break
+        }
+
+        if (classified.category === 'invalid_request') {
+          throw new Error(keyManager.sanitize(classified.message))
+        }
+
+        // Key-specific or provider failure: record failure and proceed to failover
+        keyManager.recordFailure(slot.id, classified)
+        console.info(`[OpenRouter] Failover: attempting next eligible key slot...`)
+      } catch (err: unknown) {
+        clearTimeout(timerId)
+
+        // If already a request/model error, bubble it up or move to next model.
+        if (lastClassifiedFailure?.category === 'invalid_request') {
+          throw err
+        }
+        if (lastClassifiedFailure?.category === 'model_unavailable') {
+          break
+        }
+
+        if ((err as { name?: string }).name === 'AbortError') {
+          const timeoutFailure: ClassifiedFailure = {
+            category: 'transient',
+            retryAfterMs: 5_000,
+            message: `Request timed out after ${timeoutMs}ms.`,
+          }
+          lastClassifiedFailure = timeoutFailure
+          keyManager.recordFailure(slot.id, timeoutFailure)
+          console.warn(`[OpenRouter] Slot "${slot.id}" timed out. Attempting next slot...`)
+        } else if (
+          err instanceof Error &&
+          (err.message.includes('Free-Only') || err.message.includes('Security Policy'))
+        ) {
+          throw err
+        } else {
+          const errorMsg = (err as Error).message || 'Network fetch failure'
+          const networkFailure: ClassifiedFailure = {
+            category: 'transient',
+            retryAfterMs: 5_000,
+            message: errorMsg,
+          }
+          lastClassifiedFailure = networkFailure
+          keyManager.recordFailure(slot.id, networkFailure)
+          console.warn(`[OpenRouter] Slot "${slot.id}" encountered network error. Attempting next slot...`)
+        }
+      }
     }
 
-    attemptedSlotIds.add(slot.id)
-
-    // Observability: Log request initiation with safe slot identifier (NEVER the key)
-    console.info(`[OpenRouter] Request initiated for model "${model}" using slot "${slot.id}".`)
-
-    const controller = new AbortController()
-    const timerId = setTimeout(() => controller.abort(), timeoutMs)
-
-    try {
-      const payload = {
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.1,
-      }
-
-      const res = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${slot.key}`,
-          'HTTP-Referer': 'https://reroute.local',
-          'X-Title': 'ReRoute AI Disruption Interpreter',
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      })
-
-      clearTimeout(timerId)
-
-      if (res.ok) {
-        keyManager.recordSuccess(slot.id)
-        console.info(`[OpenRouter] Request succeeded on slot "${slot.id}".`)
-
-        const data = (await res.json()) as {
-          choices?: Array<{ message?: { content?: string } }>
-        }
-
-        const rawContent = data.choices?.[0]?.message?.content
-        if (!rawContent) {
-          throw new Error('OpenRouter returned an empty choices content.')
-        }
-
-        return extractJsonFromText(rawContent)
-      }
-
-      // Non-OK HTTP response: read error body and classify
-      const errBodyText = await res.text().catch(() => '')
-      const classified = classifyOpenRouterResponse(res.status, errBodyText, res.headers)
-      lastClassifiedFailure = classified
-
-      console.warn(
-        `[OpenRouter] Slot "${slot.id}" failed with category: ${classified.category}. Status: ${res.status}.`
-      )
-
-      // Request-specific errors: Do NOT disable key or retry next key
-      if (classified.category === 'invalid_request') {
-        throw new Error(keyManager.sanitize(classified.message))
-      }
-
-      // Key-specific or provider failure: record failure and proceed to failover
-      keyManager.recordFailure(slot.id, classified)
-      console.info(`[OpenRouter] Failover: attempting next eligible key slot...`)
-    } catch (err: unknown) {
-      clearTimeout(timerId)
-
-      // If already an invalid_request error, bubble it up immediately
-      if (lastClassifiedFailure?.category === 'invalid_request') {
-        throw err
-      }
-
-      if ((err as { name?: string }).name === 'AbortError') {
-        const timeoutFailure: ClassifiedFailure = {
-          category: 'transient',
-          retryAfterMs: 5_000,
-          message: `Request timed out after ${timeoutMs}ms.`,
-        }
-        lastClassifiedFailure = timeoutFailure
-        keyManager.recordFailure(slot.id, timeoutFailure)
-        console.warn(`[OpenRouter] Slot "${slot.id}" timed out. Attempting next slot...`)
-      } else if (
-        err instanceof Error &&
-        (err.message.includes('Free-Only') || err.message.includes('Security Policy'))
-      ) {
-        throw err
-      } else {
-        const errorMsg = (err as Error).message || 'Network fetch failure'
-        const networkFailure: ClassifiedFailure = {
-          category: 'transient',
-          retryAfterMs: 5_000,
-          message: errorMsg,
-        }
-        lastClassifiedFailure = networkFailure
-        keyManager.recordFailure(slot.id, networkFailure)
-        console.warn(`[OpenRouter] Slot "${slot.id}" encountered network error. Attempting next slot...`)
-      }
+    if (lastClassifiedFailure?.category !== 'model_unavailable') {
+      break
     }
   }
 
   // 4. All eligible keys exhausted: return actionable, sanitized failure
   const publicStatus = keyManager.getPublicStatus()
+
+  if (
+    unavailableModels.length > 0 &&
+    unavailableModels.length === approvedModels.length &&
+    publicStatus.healthyCount > 0
+  ) {
+    throw new OpenRouterModelUnavailableError(
+      'No approved free OpenRouter model is currently available. Please try again later or update OPENROUTER_FREE_MODEL_ALLOWLIST with verified zero-priced models.',
+      unavailableModels
+    )
+  }
+
   console.error(`[OpenRouter] All eligible keys exhausted. Status: ${publicStatus.allExhaustedReason}`)
 
   let finalErrorMessage = 'All configured OpenRouter account keys are currently unavailable.'

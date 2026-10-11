@@ -28,8 +28,8 @@ OPENROUTER_API_KEY_1=sk-or-v1-...
 OPENROUTER_API_KEY_2=sk-or-v1-...
 OPENROUTER_API_KEY_3=sk-or-v1-...
 
-OPENROUTER_FREE_MODEL=google/gemini-2.0-flash-exp:free
-OPENROUTER_FREE_MODEL_ALLOWLIST=google/gemini-2.0-flash-exp:free,google/gemini-2.0-flash-thinking-exp:free,meta-llama/llama-3.3-70b-instruct:free,meta-llama/llama-3.1-8b-instruct:free,qwen/qwen-2.5-72b-instruct:free,mistralai/mistral-7b-instruct:free,openrouter/free
+OPENROUTER_FREE_MODEL=apodex/apodex-1.1-mini:free
+OPENROUTER_FREE_MODEL_ALLOWLIST=apodex/apodex-1.1-mini:free,openrouter/free
 OPENROUTER_PAID_FALLBACK_ENABLED=false
 ```
 
@@ -38,7 +38,7 @@ OPENROUTER_PAID_FALLBACK_ENABLED=false
 
 ### 2. Strict Free-Only Model Policy
 
-- Only approved free models ending in `:free` (or `openrouter/free`) are permitted.
+- Only approved models verified as zero-priced in the OpenRouter catalog are permitted. Some currently free model IDs do not end in `:free`, so do not infer pricing from the suffix alone.
 - `OPENROUTER_PAID_FALLBACK_ENABLED` is enforced as `false`. Any attempt to request a paid model or enable paid fallback is rejected server-side before making a network call.
 - The server fails closed rather than risking paid requests.
 
@@ -50,6 +50,7 @@ OPENROUTER_PAID_FALLBACK_ENABLED=false
 - **Authentication Failures (HTTP 401/403):** Marks key as `auth_failed` and fails over.
 - **Transient Failures (HTTP 5xx, timeouts):** Bounded retry on the next key with short cooldowns.
 - **Request Errors (HTTP 400 Bad Request):** Fails immediately without disabling healthy keys.
+- **Model Availability Failures (HTTP 404 "No endpoints found", unsupported model):** Does not mark API keys unhealthy and tries the next approved verified free model, if configured.
 - **Bounded Retries:** Each key is attempted at most once per logical request. Infinite retry loops are impossible.
 
 ### 4. Process Restarts & Multi-Instance Architecture

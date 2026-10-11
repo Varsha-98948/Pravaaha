@@ -26,6 +26,7 @@ import {
 import {
   DEFAULT_FREE_MODEL,
   DEFAULT_FREE_MODEL_ALLOWLIST,
+  OpenRouterModelUnavailableError,
   isApprovedFreeModel,
   parseFreeModelAllowlist,
   executeOpenRouterRequestWithFailover,
@@ -174,7 +175,7 @@ export function resolveAiConfig(
           provider: 'openrouter',
           model,
           missingConfig: [
-            `OPENROUTER_FREE_MODEL "${model}" is not on the approved free-model allowlist ending in :free. Please select an approved free model.`,
+            `OPENROUTER_FREE_MODEL "${model}" is not on the approved verified free-model allowlist. Please select a zero-priced OpenRouter model that has been verified in the backend configuration.`,
           ],
           openrouter: openrouterStatus,
         },
@@ -450,6 +451,34 @@ export function extractJsonFromText(rawText: string): Record<string, unknown> {
   throw new Error('AI output was not valid JSON.')
 }
 
+export function toPublicAiError(err: unknown): string {
+  const message = (err as Error).message || 'Failed to communicate with AI provider.'
+
+  if (err instanceof OpenRouterModelUnavailableError) {
+    return 'No approved free AI model is currently available. Please try again later.'
+  }
+  if (/configured free OpenRouter model is unavailable|model_unavailable|no endpoints found/i.test(message)) {
+    return 'The configured free AI model is currently unavailable.'
+  }
+  if (/No approved verified free OpenRouter model|Free-Only Policy Violation|approved verified free model/i.test(message)) {
+    return 'The AI model configuration is not approved for free-only use.'
+  }
+  if (/auth|unauthorized|forbidden|invalid api key/i.test(message)) {
+    return 'Authentication failed: the AI service credentials require attention.'
+  }
+  if (/rate[- ]?limit|temporarily rate-limited/i.test(message)) {
+    return 'The AI service has reached a temporary rate limit. Please try again shortly.'
+  }
+  if (/empty choices content|not valid JSON|AI output/i.test(message)) {
+    return 'The AI response could not be interpreted safely.'
+  }
+  if (/credit|billing|payment required/i.test(message)) {
+    return 'The configured AI service account cannot use the selected free model right now.'
+  }
+
+  return message
+}
+
 /**
  * Calls the configured AI provider and returns raw parsed interpretation.
  */
@@ -708,7 +737,9 @@ export async function interpretDisruptionWithAi(
       fetchFn,
     })
   } catch (err: unknown) {
-    const errorMsg = (err as Error).message || 'Failed to communicate with AI provider.'
+    const technicalMsg = (err as Error).message || 'Failed to communicate with AI provider.'
+    const errorMsg = toPublicAiError(err)
+    console.warn(`[AI Interpreter] ${technicalMsg}`)
     return {
       rawText: text,
       event: null,

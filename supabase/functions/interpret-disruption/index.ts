@@ -12,6 +12,28 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+const verifiedFreeModels = new Set([
+  'apodex/apodex-1.1-mini:free',
+  'openrouter/free',
+])
+
+function parseAllowlist(raw?: string): string[] {
+  const values = (raw || 'apodex/apodex-1.1-mini:free,openrouter/free')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+  return values.filter((value, index) => values.indexOf(value) === index)
+}
+
+function isApprovedFreeModel(model: string, allowlist: string[]): boolean {
+  return allowlist.includes(model) && verifiedFreeModels.has(model)
+}
+
+function isModelUnavailable(status: number, body: string): boolean {
+  const lower = body.toLowerCase()
+  return status === 404 || lower.includes('no endpoints found') || lower.includes('model not found') || lower.includes('unsupported model') || lower.includes('does not support feature')
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -28,7 +50,7 @@ serve(async (req) => {
 
     const apiKey = openrouterKeys[0] || env.AI_API_KEY || env.GEMINI_API_KEY || env.OPENAI_API_KEY || ''
     const provider = env.AI_PROVIDER || (openrouterKeys.length > 0 ? 'openrouter' : (env.OPENAI_API_KEY ? 'openai' : 'gemini'))
-    const model = env.AI_MODEL || env.OPENROUTER_FREE_MODEL || (provider === 'openrouter' ? 'google/gemini-2.0-flash-exp:free' : (provider === 'openai' ? 'gpt-4o-mini' : 'gemini-1.5-flash'))
+    const model = env.AI_MODEL || env.OPENROUTER_FREE_MODEL || (provider === 'openrouter' ? 'apodex/apodex-1.1-mini:free' : (provider === 'openai' ? 'gpt-4o-mini' : 'gemini-1.5-flash'))
 
     if (!apiKey) {
       return new Response(
@@ -49,6 +71,29 @@ serve(async (req) => {
 
     // OpenRouter Free Model API call with key failover
     if (provider === 'openrouter') {
+      const allowlist = parseAllowlist(env.OPENROUTER_FREE_MODEL_ALLOWLIST)
+      const modelSequence = [model, ...allowlist]
+        .map((value) => value.trim())
+        .filter((value, index, values) => values.indexOf(value) === index)
+        .filter((value) => isApprovedFreeModel(value, allowlist))
+
+      if (env.OPENROUTER_PAID_FALLBACK_ENABLED === 'true' || !isApprovedFreeModel(model, allowlist)) {
+        return new Response(
+          JSON.stringify({
+            rawText: '',
+            event: null,
+            missing: ['The AI model configuration is not approved for free-only use.'],
+            unknownLocations: [],
+            unknownVehicles: [],
+            preview: 'AI Interpreter Error: The AI model configuration is not approved for free-only use.',
+            confirmation: 'pending',
+            source: 'ai',
+            error: 'The AI model configuration is not approved for free-only use.',
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        )
+      }
+
       const systemPrompt = `You are the Pravaaha ReRoute AI Disruption Interpreter. Convert natural language into a single JSON object.
 Simulation minute 0 is 08:00 AM. Current simulation minute is ${currentTime}.
 Supported event types: "road_closure" (needs distinct known from & to), "vehicle_failure" (needs known vehicleId), "urgent_delivery" (needs known locationId, size, serviceMin, window start/end).
@@ -60,38 +105,53 @@ Output JSON format: { eventType, event, preview, missing: [], unknownLocations: 
       let lastError: Error | null = null
       let parsedResult: any = null
 
-      for (const currentKey of openrouterKeys.length > 0 ? openrouterKeys : [apiKey]) {
-        try {
-          const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${currentKey}`,
-              'HTTP-Referer': 'https://reroute.local',
-              'X-Title': 'ReRoute AI Disruption Interpreter',
-            },
-            body: JSON.stringify({
-              model,
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: `Dispatcher report: "${text}"` },
-              ],
-              response_format: { type: 'json_object' },
-              temperature: 0.1,
-            }),
-          })
+      for (const currentModel of modelSequence) {
+        let currentModelUnavailable = false
 
-          if (!res.ok) {
-            throw new Error(`OpenRouter returned status ${res.status}: ${res.statusText}`)
+        for (const currentKey of openrouterKeys.length > 0 ? openrouterKeys : [apiKey]) {
+          try {
+            const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${currentKey}`,
+                'HTTP-Referer': 'https://reroute.local',
+                'X-Title': 'ReRoute AI Disruption Interpreter',
+              },
+              body: JSON.stringify({
+                model: currentModel,
+                messages: [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: `Dispatcher report: "${text}"` },
+                ],
+                response_format: { type: 'json_object' },
+                temperature: 0.1,
+              }),
+            })
+
+            if (!res.ok) {
+              const errorBody = await res.text().catch(() => '')
+              if (isModelUnavailable(res.status, errorBody)) {
+                currentModelUnavailable = true
+                lastError = new Error('The configured free AI model is currently unavailable.')
+                break
+              }
+              throw new Error(`OpenRouter returned status ${res.status}: ${res.statusText}`)
+            }
+
+            const data = await res.json()
+            const candidateText = data.choices?.[0]?.message?.content || '{}'
+            parsedResult = JSON.parse(candidateText)
+            break
+          } catch (err: unknown) {
+            lastError = err as Error
           }
-
-          const data = await res.json()
-          const candidateText = data.choices?.[0]?.message?.content || '{}'
-          parsedResult = JSON.parse(candidateText)
-          break
-        } catch (err: unknown) {
-          lastError = err as Error
         }
+
+        if (parsedResult) {
+          break
+        }
+        if (!currentModelUnavailable) break
       }
 
       if (!parsedResult) {

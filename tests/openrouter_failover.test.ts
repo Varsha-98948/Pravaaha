@@ -417,6 +417,82 @@ describe('OpenRouter Multi-Key Failover & Free-Only Policy', () => {
     expect(publicStatus.slots[1].status).toBe('healthy')
   })
 
+  it('10a. Model-level 404 does not disable healthy keys or retry the same model across every key', async () => {
+    const keyManager = new OpenRouterKeyManager({
+      OPENROUTER_API_KEY_1: MOCK_SECRET_1,
+      OPENROUTER_API_KEY_2: MOCK_SECRET_2,
+      OPENROUTER_API_KEY_3: MOCK_SECRET_3,
+    })
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      headers: new Headers(),
+      text: async () =>
+        JSON.stringify({
+          error: {
+            message: 'No endpoints found for apodex/apodex-1.1-mini:free.',
+            code: 404,
+          },
+        }),
+    })
+
+    await expect(
+      executeOpenRouterRequestWithFailover({
+        systemPrompt: 'System',
+        userPrompt: 'Test prompt',
+        model: DEFAULT_FREE_MODEL,
+        allowlist: [DEFAULT_FREE_MODEL],
+        keyManager,
+        fetchFn: mockFetch as unknown as typeof fetch,
+      })
+    ).rejects.toThrow(/No approved free OpenRouter model is currently available/i)
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    const publicStatus = keyManager.getPublicStatus()
+    expect(publicStatus.healthyCount).toBe(3)
+    expect(publicStatus.slots.every((slot) => slot.status === 'healthy')).toBe(true)
+  })
+
+  it('10b. Model-level 404 falls back to the next approved verified free model', async () => {
+    const keyManager = new OpenRouterKeyManager({
+      OPENROUTER_API_KEY_1: MOCK_SECRET_1,
+      OPENROUTER_API_KEY_2: MOCK_SECRET_2,
+      OPENROUTER_API_KEY_3: MOCK_SECRET_3,
+    })
+
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        headers: new Headers(),
+        text: async () => '{"error":{"message":"No endpoints found for apodex/apodex-1.1-mini:free.","code":404}}',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => JSON.parse(successResponseBody),
+      })
+
+    const result = await executeOpenRouterRequestWithFailover({
+      systemPrompt: 'System',
+      userPrompt: 'Test prompt',
+      model: DEFAULT_FREE_MODEL,
+      allowlist: [DEFAULT_FREE_MODEL, 'openrouter/free'],
+      keyManager,
+      fetchFn: mockFetch as unknown as typeof fetch,
+    })
+
+    expect(result.eventType).toBe('road_closure')
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    const firstPayload = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
+    const secondPayload = JSON.parse(String(mockFetch.mock.calls[1][1]?.body))
+    expect(firstPayload.model).toBe(DEFAULT_FREE_MODEL)
+    expect(secondPayload.model).toBe('openrouter/free')
+    expect(keyManager.getPublicStatus().healthyCount).toBe(3)
+  })
+
   // Scenario 11: Empty key slots are skipped
   it('11. Empty key slots are skipped', async () => {
     const keyManager = new OpenRouterKeyManager({
@@ -473,9 +549,9 @@ describe('OpenRouter Multi-Key Failover & Free-Only Policy', () => {
 
   // Scenario 13: No unapproved model can be selected by fallback logic
   it('13. Models not on the approved allowlist are strictly rejected', () => {
-    const allowlist = ['google/gemini-2.0-flash-exp:free']
+    const allowlist = [DEFAULT_FREE_MODEL]
 
-    expect(isApprovedFreeModel('google/gemini-2.0-flash-exp:free', allowlist)).toBe(true)
+    expect(isApprovedFreeModel(DEFAULT_FREE_MODEL, allowlist)).toBe(true)
     expect(isApprovedFreeModel('unknown/model:free', allowlist)).toBe(false)
     expect(isApprovedFreeModel('anthropic/claude-3-5-sonnet:free', allowlist)).toBe(false)
     expect(isApprovedFreeModel('', allowlist)).toBe(false)
@@ -506,7 +582,7 @@ describe('OpenRouter Multi-Key Failover & Free-Only Policy', () => {
     const { config, status } = resolveAiConfig(env)
     expect(config).toBeNull()
     expect(status.configured).toBe(false)
-    expect(status.missingConfig[0]).toContain('not on the approved free-model allowlist')
+    expect(status.missingConfig[0]).toContain('not on the approved verified free-model allowlist')
 
     // AI interpreter execution with unconfigured config returns structured placeholder response
     const result = await interpretDisruptionWithAi({

@@ -23,6 +23,7 @@ export type FailureCategory =
   | 'credit_exhausted'
   | 'rate_limited'
   | 'auth_failed'
+  | 'model_unavailable'
   | 'transient'
   | 'invalid_request'
   | 'unknown'
@@ -279,7 +280,8 @@ export class OpenRouterKeyManager {
       }
 
       case 'invalid_request':
-        // Request syntax/prompt/model error — NOT a key health problem.
+      case 'model_unavailable':
+        // Request syntax/prompt/model availability error - NOT a key health problem.
         // Do not alter key health status.
         break
 
