@@ -152,23 +152,6 @@ export default function Disruptions({
   const prepare = () => {
     setErr('')
     setSuccess('')
-    if (!text.trim()) {
-      setErr('Enter a short incident description before preparing the disruption.')
-      return
-    }
-
-    if (isDemoMode) {
-      setRes({
-        rawText: text,
-        event: null,
-        missing: ['AI interpreter is not configured. Choose a quick incident scenario in demo mode.'],
-        unknownLocations: [],
-        preview: 'Free-text interpretation is not configured.',
-        confirmation: 'pending',
-        source: 'placeholder',
-      })
-      return
-    }
 
     const effectiveAt = Number(at)
     if (!Number.isFinite(effectiveAt) || effectiveAt < 0) {
@@ -179,10 +162,22 @@ export default function Disruptions({
     let event: DisruptionEvent
     const eventId = `dis-${crypto.randomUUID()}`
     if (kind === 'vehicle_failure') {
+      if (!vehicleId) {
+        setErr('Select a vehicle that failed.')
+        return
+      }
       event = { type: kind, id: eventId, at: effectiveAt, vehicleId }
     } else if (kind === 'road_closure') {
+      if (!fromLocation || !toLocation || fromLocation === toLocation) {
+        setErr('Select distinct from and to locations for the closed road.')
+        return
+      }
       event = { type: kind, id: eventId, at: effectiveAt, from: fromLocation, to: toLocation }
     } else {
+      if (!deliveryLocation) {
+        setErr('Select a customer location for the urgent delivery.')
+        return
+      }
       const size = Number(deliverySize)
       const service = Number(serviceMin)
       const start = Number(windowStart)
@@ -217,7 +212,15 @@ export default function Disruptions({
         ? `Road from ${locName(validatedEvent.from)} to ${locName(validatedEvent.to)} closes at ${fmtTime(validatedEvent.at)}.`
         : `Urgent delivery of ${validatedEvent.delivery.size} units at ${locName(validatedEvent.delivery.locationId)} at ${fmtTime(validatedEvent.at)}.`
 
-    setRes({ rawText: text.trim(), event: validatedEvent, missing: [], unknownLocations: [], preview, confirmation: 'pending', source: 'placeholder' })
+    setRes({
+      rawText: text.trim() || preview,
+      event: validatedEvent,
+      missing: [],
+      unknownLocations: [],
+      preview,
+      confirmation: 'pending',
+      source: 'placeholder',
+    })
   }
 
   const prepareWithAi = async () => {
@@ -227,11 +230,7 @@ export default function Disruptions({
       setErr('Enter a short incident description before preparing the disruption.')
       return
     }
-    if (isDemoMode) {
-      setErr('AI interpretation is available only through the configured backend in live mode. Use a demo scenario instead.')
-      return
-    }
-    if (!profile?.orgId) {
+    if (!isDemoMode && !profile?.orgId) {
       setErr('Your organization profile is unavailable. Sign in again before interpreting an incident.')
       return
     }
@@ -386,7 +385,7 @@ export default function Disruptions({
             </div>
           </div>}
 
-          {!isDemoMode && <div className="mb-3 grid gap-3 rounded border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+          <div className="mb-3 grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-2">
             <label className="text-xs text-slate-600">Disruption type
               <select value={kind} onChange={event => setKind(event.target.value as EventKind)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm">
                 <option value="vehicle_failure">Vehicle failure</option><option value="road_closure">Road closure</option><option value="urgent_delivery">Urgent delivery</option>
@@ -409,18 +408,30 @@ export default function Disruptions({
               <label className="text-xs text-slate-600">Window start<input type="number" min="0" value={windowStart} onChange={event => setWindowStart(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
               <label className="text-xs text-slate-600">Window end<input type="number" min="1" value={windowEnd} onChange={event => setWindowEnd(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm" /></label>
             </>}
-          </div>}
+          </div>
 
           <label className="block text-xs font-semibold text-slate-700">Incident report
-            <textarea value={text} onChange={event => setText(event.target.value)} rows={3} placeholder="Describe a road closure, vehicle breakdown, or urgent delivery" className="mt-1 w-full rounded border border-slate-300 bg-white p-3 text-sm" />
+            <textarea value={text} onChange={event => setText(event.target.value)} rows={3} placeholder="Describe a road closure, vehicle breakdown, or urgent delivery in natural language…" className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-3 text-sm focus:border-[#243607] focus:outline-none" />
           </label>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {!isDemoMode && <button onClick={() => void prepareWithAi()} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded bg-[#243607] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{interpreting ? 'Interpreting…' : 'Interpret with AI'}</button>}
-            <button onClick={prepare} disabled={!text.trim() || loading || submitting || interpreting || !canWrite} className="rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-40">Prepare structured event</button>
+          <div className="mt-3 flex flex-wrap gap-2.5">
+            <button
+              onClick={() => void prepareWithAi()}
+              disabled={!text.trim() || loading || submitting || interpreting || !canWrite}
+              className="rounded-lg bg-[#243607] hover:bg-[#182404] px-4 py-2 text-sm font-medium text-white shadow-sm transition-all disabled:opacity-40"
+            >
+              {interpreting ? 'Interpreting with AI…' : 'Interpret with AI'}
+            </button>
+            <button
+              onClick={prepare}
+              disabled={loading || submitting || interpreting || !canWrite}
+              className="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-all disabled:opacity-40"
+            >
+              Prepare structured event
+            </button>
           </div>
           {!canWrite && <div className="mt-2 text-xs text-slate-500">Your role is read-only. You can review disruption data but cannot prepare or confirm changes.</div>}
 
-          {res && <div className="mt-4 rounded border border-slate-200 bg-slate-50/50 p-4 text-sm">
+          {res && <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-sm">
             <div className="flex flex-wrap items-center gap-2"><Badge t={res.source === 'ai' ? 'ok' : 'warn'}>{res.source}</Badge><span className="font-medium text-slate-800">{res.preview}</span></div>
             {res.event && <div className="mt-2 text-xs text-slate-600"><span className="font-semibold">Event type:</span> {res.event.type} · <span className="font-semibold">Effective time:</span> {fmtTime(res.event.at)} ({res.event.at}m)</div>}
             {res.missing.length > 0 && <div className="mt-1 text-xs text-amber-700">Missing: {res.missing.join(', ')}</div>}
@@ -430,8 +441,8 @@ export default function Disruptions({
             {!isDemoMode && !currentPlan && <State kind="error" text="A saved organization plan is required before a disruption can be confirmed." />}
             {!isDemoMode && currentPlan && travelLegCount === 0 && <State kind="error" text="No route-leg travel times can be recovered from the saved plan. Live replanning is unavailable for this data." />}
             <div className="mt-3 flex gap-2">
-              <button onClick={() => void confirm()} disabled={!res.event || !canWrite || submitting || (!isDemoMode && (!currentPlan || travelLegCount === 0))} className="rounded bg-navy px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{submitting ? 'Saving disruption and plan…' : 'Confirm and replan'}</button>
-              <button onClick={() => { setRes(null); setErr('') }} disabled={submitting} className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50">Reject</button>
+              <button onClick={() => void confirm()} disabled={!res.event || !canWrite || submitting || (!isDemoMode && (!currentPlan || travelLegCount === 0))} className="rounded-lg bg-[#243607] hover:bg-[#182404] px-4 py-2 text-sm font-medium text-white shadow-sm transition-all disabled:opacity-40">{submitting ? 'Saving disruption and plan…' : 'Confirm and replan'}</button>
+              <button onClick={() => { setRes(null); setErr('') }} disabled={submitting} className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50">Reject</button>
             </div>
           </div>}
         </>}
@@ -458,7 +469,7 @@ export default function Disruptions({
               const vehicle = world?.vehicles.find(item => item.id === route.vehicleId)
               return <div key={route.vehicleId} className="rounded-lg border border-slate-200 bg-slate-50/50 p-3">
                 <div className="mb-2 flex items-center justify-between"><span className="font-semibold text-slate-800">{vehicle?.name ?? route.vehicleId}</span><Badge t={vehicle?.status === 'failed' ? 'bad' : 'mute'}>{route.load}/{vehicle?.capacity ?? 0} load {vehicle?.status === 'failed' ? '(failed)' : ''}</Badge></div>
-                <ol className="space-y-2 border-l-2 border-teal/40 pl-3">
+                <ol className="space-y-2 border-l-2 border-[#243607]/40 pl-3">
                   {route.stops.map(stop => <li key={stop.deliveryId} className="text-xs"><div className="font-medium text-slate-800">{fmtTime(stop.serviceStart)} {locName(stop.locationId)} <Badge t={stop.status === 'completed' ? 'ok' : stop.status === 'late' ? 'warn' : stop.status === 'skipped' ? 'bad' : 'mute'}>{stop.status}</Badge></div><div className="text-slate-500">Arr {fmtTime(stop.arrival)}{stop.waitMin > 0 && ` · waits ${stop.waitMin}m`} · Dep {fmtTime(stop.departure)}</div></li>)}
                   {route.stops.length === 0 && <li className="text-xs text-slate-400">No stops assigned</li>}
                 </ol>

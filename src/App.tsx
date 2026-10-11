@@ -188,90 +188,127 @@ export default function App() {
   }, [items, page])
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-[100dvh] bg-[#f2f3ec]">
+      {/* Mobile Drawer Backdrop Scrim */}
+      {open && (
+        <div
+          className="fixed inset-0 z-40 bg-[#30280D]/60 backdrop-blur-sm md:hidden"
+          onClick={() => setOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Spatial Sidebar - Persistent and sticky with independent scrolling */}
       <aside
-        className={`${open ? 'block' : 'hidden'} md:block fixed md:static z-10 h-full w-56 shrink-0 bg-navy p-4 text-slate-200`}
+        className={`fixed md:sticky top-0 z-50 md:z-30 h-[100dvh] w-64 shrink-0 flex flex-col justify-between overflow-y-auto border-r border-[#BBBEA7]/15 bg-gradient-to-b from-[#30280D] via-[#241e0a] to-[#181405] p-4 text-[#BBBEA7] shadow-xl md:shadow-none transition-transform duration-200 ease-in-out ${
+          open ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+        }`}
       >
-        <div className="mb-6 flex items-center justify-between">
-          <div className="text-lg font-semibold text-white">ReRoute</div>
-          {profile && <Badge t={profile.role === 'admin' ? 'warn' : 'ok'}>{profile.role}</Badge>}
+        <div>
+          <div className="mb-6 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#243607] text-[#f2f3ec] shadow-sm font-bold tracking-wider text-sm border border-[#BBBEA7]/20">
+                RR
+              </div>
+              <div>
+                <div className="text-base font-bold tracking-tight text-white leading-none">ReRoute</div>
+                <div className="mt-1 text-[10px] uppercase tracking-wider text-[#BBBEA7]/60">Spatial Dispatch</div>
+              </div>
+            </div>
+            {profile && <Badge t={profile.role === 'admin' ? 'warn' : 'ok'}>{profile.role}</Badge>}
+          </div>
+
+          <nav className="space-y-1">
+            {items.map((n) => {
+              const active = page === n.id
+              return (
+                <button
+                  key={n.id}
+                  onClick={() => {
+                    setPage(n.id)
+                    setOpen(false)
+                  }}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${
+                    active
+                      ? 'bg-[#243607] text-white border border-[#BBBEA7]/30 shadow-sm'
+                      : 'text-[#BBBEA7]/80 hover:bg-[#BBBEA7]/10 hover:text-white'
+                  }`}
+                >
+                  <n.I size={17} className={active ? 'text-white' : 'text-[#BBBEA7]/70'} />
+                  {n.label}
+                </button>
+              )
+            })}
+          </nav>
         </div>
 
-        <nav className="space-y-1">
-          {items.map((n) => (
-            <button
-              key={n.id}
-              onClick={() => {
-                setPage(n.id)
-                setOpen(false)
-              }}
-              className={`flex w-full items-center gap-2 rounded px-3 py-2 text-sm ${page === n.id ? 'bg-teal text-white' : 'hover:bg-white/10'}`}
-            >
-              <n.I size={16} />
-              {n.label}
-            </button>
-          ))}
-        </nav>
-
-        <div className="mt-8 border-t border-white/10 pt-4">
+        <div className="mt-8 border-t border-[#BBBEA7]/15 pt-4">
           {isDemoMode ? (
-            <label className="block text-xs text-slate-400">
+            <label className="block text-xs text-[#BBBEA7]/80 font-medium">
               Demo role
               <select
                 value={demoRole}
                 onChange={(e) => setDemoRole(e.target.value as Role)}
-                className="mt-1 w-full rounded bg-white/10 p-1 text-slate-100"
+                className="mt-1.5 w-full rounded-md border border-[#BBBEA7]/20 bg-[#1e1908] p-1.5 text-xs text-[#f2f3ec] focus:border-[#BBBEA7]/50 focus:outline-none"
               >
-                <option>admin</option>
-                <option>dispatcher</option>
-                <option>viewer</option>
+                <option value="admin">admin</option>
+                <option value="dispatcher">dispatcher</option>
+                <option value="viewer">viewer</option>
               </select>
             </label>
           ) : (
             profile && (
-              <div className="mb-3 text-xs text-slate-300">
-                <div className="font-medium text-white">{profile.name}</div>
-                <div className="truncate text-slate-400">{profile.email}</div>
+              <div className="mb-3 text-xs text-[#BBBEA7]/80">
+                <div className="font-semibold text-white truncate">{profile.name}</div>
+                <div className="truncate text-[11px] text-[#BBBEA7]/60">{profile.email}</div>
               </div>
             )
           )}
 
           <button
             onClick={handleSignOut}
-            className="mt-3 flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+            className="mt-3 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium text-[#BBBEA7]/75 hover:bg-[#BBBEA7]/10 hover:text-white transition-colors"
           >
             <LogOut size={14} /> Sign out
           </button>
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1">
-      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-[#30280D]/10 bg-[#f2f3ec]/90 px-4 py-3 backdrop-blur-md md:px-8">
-        <div className="flex items-center gap-3">
-        <button className="mb-3 md:hidden" aria-label="Menu" onClick={() => setOpen(!open)}>
-          <Menu />
-        </button>
-          <div className="flex items-center gap-2 text-xs text-[#30280D]/75">
-            <Radio size={14} className="text-[#243607]" />
-            <span className="font-bold uppercase tracking-wider">{items.find(item => item.id === page)?.label ?? 'Operations'}</span>
-            <span className="hidden sm:inline rounded-md border border-[#243607]/20 bg-[#243607]/10 px-2 py-0.5 font-medium text-[#243607]">{isDemoMode ? 'Demo data' : profile?.orgId ?? 'Organization'}</span>
+      {/* Main Content Area */}
+      <div className="min-w-0 flex-1 min-h-[100dvh] flex flex-col">
+        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-[#30280D]/10 bg-[#f2f3ec]/90 px-4 py-3 backdrop-blur-md md:px-8">
+          <div className="flex items-center gap-3">
+            <button
+              className="rounded-lg p-1 text-[#30280D] hover:bg-[#30280D]/06 md:hidden"
+              aria-label="Toggle navigation menu"
+              onClick={() => setOpen(!open)}
+            >
+              <Menu size={20} />
+            </button>
+            <div className="flex items-center gap-2 text-xs text-[#30280D]/75">
+              <Radio size={14} className="text-[#243607]" />
+              <span className="font-bold uppercase tracking-wider">{items.find((item) => item.id === page)?.label ?? 'Operations'}</span>
+              <span className="hidden sm:inline rounded-md border border-[#243607]/20 bg-[#243607]/10 px-2 py-0.5 font-medium text-[#243607]">
+                {isDemoMode ? 'Demo data' : profile?.orgId ?? 'Organization'}
+              </span>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-1.5 rounded-lg border border-[#30280D]/10 bg-white/70 px-2.5 py-1 text-xs text-[#30280D]/70">
-          <Clock size={13} className="text-[#243607]" />
-          <span>{isDemoMode ? 'Demo mode' : 'Authenticated session'}</span>
-        </div>
-      </header>
-      <main className="min-w-0 p-4 md:p-8">
-        {page === 'dis' ? <Disruptions profile={profile} demoRole={activeRole} />
-          : page === 'del' ? <Deliveries profile={profile} />
-          : page === 'fleet' ? <Fleet profile={profile} />
-              : page === 'route' ? <Routes profile={profile} demoRole={activeRole} />
-                : page === 'dash' ? <Dashboard profile={profile} />
-                  : page === 'cmp' ? <Compare profile={profile} />
-                    : page === 'usr' ? <Users profile={profile} />
-              : <Cur />}
-      </main>
+          <div className="flex items-center gap-1.5 rounded-lg border border-[#30280D]/10 bg-white/70 px-2.5 py-1 text-xs text-[#30280D]/70 shadow-sm">
+            <Clock size={13} className="text-[#243607]" />
+            <span>{isDemoMode ? 'Demo mode' : 'Authenticated session'}</span>
+          </div>
+        </header>
+
+        <main className="min-w-0 flex-1 p-4 md:p-8">
+          {page === 'dis' ? <Disruptions profile={profile} demoRole={activeRole} />
+            : page === 'del' ? <Deliveries profile={profile} />
+            : page === 'fleet' ? <Fleet profile={profile} />
+            : page === 'route' ? <Routes profile={profile} />
+            : page === 'dash' ? <Dashboard profile={profile} />
+            : page === 'cmp' ? <Compare profile={profile} />
+            : page === 'usr' ? <Users profile={profile} />
+            : <Cur />}
+        </main>
       </div>
     </div>
   )

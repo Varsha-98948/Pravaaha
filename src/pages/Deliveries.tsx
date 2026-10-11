@@ -21,6 +21,9 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
   const [windowStart, setWindowStart] = useState('0')
   const [windowEnd, setWindowEnd] = useState('60')
   const [priority, setPriority] = useState<Delivery['priority']>('normal')
+  const [search, setSearch] = useState('')
+  const [priorityFilter, setPriorityFilter] = useState<'all' | 'normal' | 'urgent'>('all')
+  const [selectedDeliveryId, setSelectedDeliveryId] = useState<string | null>(null)
   const canWrite = !isDemoMode && (profile?.role === 'admin' || profile?.role === 'dispatcher')
 
   const load = useCallback(async (): Promise<boolean> => {
@@ -132,6 +135,18 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
   const customerName = (id: string) => locationNames.get(id) ?? id
   const customers = locations.filter(location => location.kind === 'customer')
 
+  const filteredDeliveries = (deliveries ?? []).filter(delivery => {
+    const matchesSearch = !search ||
+      delivery.id.toLowerCase().includes(search.toLowerCase()) ||
+      customerName(delivery.locationId).toLowerCase().includes(search.toLowerCase())
+    const matchesPriority = priorityFilter === 'all' || delivery.priority === priorityFilter
+    return matchesSearch && matchesPriority
+  })
+
+  const selectedDelivery = selectedDeliveryId
+    ? deliveries?.find(d => d.id === selectedDeliveryId) ?? null
+    : null
+
   return <>
     <PageHead title="Deliveries" sub={isDemoMode ? 'Sample orders, sizes and time windows (demo mode)' : 'Orders loaded from your organization'} />
     <div className="mb-4 flex justify-end">
@@ -147,7 +162,7 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
     </div>}
     {isDemoMode
       ? <Card title="Demo mode"><State kind="empty" text="Sample deliveries are read only. Connect an authenticated Supabase organization to create deliveries." /></Card>
-      : canWrite && <Card title="Create delivery" action={<span className="text-xs text-slate-500">Organization: {profile?.name}</span>}>
+      : canWrite && <Card title="Create delivery" action={<span className="text-xs text-[#30280D]/70 font-medium">Organization: {profile?.name}</span>}>
         <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={event => void createDelivery(event)}>
           <label className="text-xs text-slate-600">Customer location
             <select required value={locationId} onChange={event => setLocationId(event.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm">
@@ -169,31 +184,133 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
           <label className="text-xs text-slate-600">Priority
             <select value={priority} onChange={event => setPriority(event.target.value as Delivery['priority'])} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 text-sm"><option value="normal">Normal</option><option value="urgent">Urgent</option></select>
           </label>
-          <button type="submit" disabled={saving || loading || customers.length === 0} className="rounded bg-navy px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{saving ? 'Saving…' : 'Create delivery'}</button>
+          <button type="submit" disabled={saving || loading || customers.length === 0} className="rounded-lg bg-[#243607] hover:bg-[#182404] px-4 py-2 text-sm font-medium text-white shadow-sm transition-all disabled:opacity-50">{saving ? 'Saving…' : 'Create delivery'}</button>
           {customers.length === 0 && <p className="text-xs text-amber-800 sm:col-span-2 lg:col-span-3">No customer locations exist in this organization. Create a customer location in Fleet first.</p>}
         </form>
       </Card>}
 
-    <div className="mt-4">
+    <div className="mt-4 space-y-4">
+      {/* Search and Filter Toolbar */}
+      {!loading && !error && deliveries && deliveries.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#30280D]/10 bg-white/70 p-3 shadow-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              placeholder="Search by ID or customer…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="rounded-lg border border-[#30280D]/15 bg-white px-3 py-1.5 text-xs text-[#30280D] placeholder-[#30280D]/40 focus:border-[#243607] focus:outline-none"
+            />
+            <div className="flex items-center gap-1 text-xs">
+              <span className="text-[#30280D]/60 font-medium">Priority:</span>
+              {(['all', 'normal', 'urgent'] as const).map(p => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPriorityFilter(p)}
+                  className={`rounded-md px-2 py-1 text-xs font-medium transition-all ${
+                    priorityFilter === p
+                      ? 'bg-[#243607] text-white shadow-sm'
+                      : 'bg-[#BBBEA7]/20 text-[#30280D]/75 hover:bg-[#BBBEA7]/35'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+          {(search || priorityFilter !== 'all' || selectedDeliveryId) && (
+            <button
+              type="button"
+              onClick={() => { setSearch(''); setPriorityFilter('all'); setSelectedDeliveryId(null); }}
+              className="text-xs font-medium text-[#91696E] hover:underline"
+            >
+              Reset filters
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Selected Delivery Details Inspector Card */}
+      {selectedDelivery && (
+        <Card
+          title={
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-sm">Delivery Inspection: {selectedDelivery.id}</span>
+              <Badge t={selectedDelivery.priority === 'urgent' ? 'warn' : 'ok'}>{selectedDelivery.priority}</Badge>
+            </div>
+          }
+          action={
+            <button
+              type="button"
+              onClick={() => setSelectedDeliveryId(null)}
+              className="text-xs text-[#30280D]/60 hover:text-[#30280D]"
+            >
+              Close
+            </button>
+          }
+        >
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 text-xs">
+            <div>
+              <span className="text-[#30280D]/60 block font-medium">Customer Location:</span>
+              <span className="font-semibold text-sm text-[#30280D]">{customerName(selectedDelivery.locationId)}</span>
+            </div>
+            <div>
+              <span className="text-[#30280D]/60 block font-medium">Size / Units:</span>
+              <span className="font-semibold text-sm text-[#30280D]">{selectedDelivery.size} units</span>
+            </div>
+            <div>
+              <span className="text-[#30280D]/60 block font-medium">Service Time:</span>
+              <span className="font-semibold text-sm text-[#30280D]">{selectedDelivery.serviceMin} minutes</span>
+            </div>
+            <div>
+              <span className="text-[#30280D]/60 block font-medium">Delivery Window:</span>
+              <span className="font-semibold text-sm text-[#30280D]">{fmtWindow(selectedDelivery.window)}</span>
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card
         title={isDemoMode ? 'Sample deliveries' : 'Organization deliveries'}
-        action={<button type="button" onClick={() => void load()} disabled={loading || saving} className="rounded border border-slate-300 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50">Refresh</button>}
+        sub={`${filteredDeliveries.length} records shown`}
+        action={<button type="button" onClick={() => void load()} disabled={loading || saving} className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50">Refresh</button>}
       >
         {loading ? <State kind="loading" text="Loading deliveries from your organization…" />
           : error ? <State kind="error" text={error} />
             : deliveries === null ? <State kind="error" text="Delivery data is unavailable." />
-              : deliveries.length === 0 ? <State kind="empty" text="No deliveries are registered for this organization yet." />
+              : filteredDeliveries.length === 0 ? <State kind="empty" text={deliveries.length === 0 ? "No deliveries are registered for this organization yet." : "No deliveries match your active filter."} />
                 : <Table
-                  head={['ID', 'Customer', 'Size', 'Service', 'Window', 'Priority', 'Assignment']}
-                  rows={deliveries.map(delivery => {
-                    const assignedVehicle = assignments.get(delivery.id)
+                  head={isDemoMode ? ['ID', 'Customer', 'Size', 'Window', 'Priority', 'Assignment', 'Action'] : ['ID', 'Customer', 'Size', 'Window', 'Priority', 'Action']}
+                  rows={filteredDeliveries.map(delivery => {
+                    const missing = demoUnassigned.get(delivery.id)
+                    const isSelected = selectedDeliveryId === delivery.id
                     const cells: ReactNode[] = [
-                      delivery.id, customerName(delivery.locationId), delivery.size, `${delivery.serviceMin} min`, fmtWindow(delivery.window),
+                      <span key={`${delivery.id}-id`} className="font-mono text-xs font-medium">{delivery.id}</span>,
+                      customerName(delivery.locationId),
+                      delivery.size,
+                      fmtWindow(delivery.window),
                       <Badge key={`${delivery.id}-priority`} t={delivery.priority === 'urgent' ? 'warn' : 'mute'}>{delivery.priority}</Badge>,
                     ]
-                    cells.push(assignedVehicle
-                      ? <Badge key={`${delivery.id}-assignment`} t={assignedVehicle.startsWith('Unassigned:') ? 'bad' : 'ok'}>{assignedVehicle.startsWith('Unassigned:') ? assignedVehicle : `Assigned to ${assignedVehicle}`}</Badge>
-                      : hasSavedPlan ? 'Not present in latest saved plan' : 'No saved plan')
+                    if (isDemoMode) {
+                      cells.push(missing
+                        ? <Badge key={`${delivery.id}-assignment`} t="bad">Unassigned: {missing.detail}</Badge>
+                        : <Badge key={`${delivery.id}-assignment`} t="ok">Assigned</Badge>)
+                    }
+                    cells.push(
+                      <button
+                        key={`${delivery.id}-inspect`}
+                        type="button"
+                        onClick={() => setSelectedDeliveryId(isSelected ? null : delivery.id)}
+                        className={`rounded px-2 py-0.5 text-xs font-medium transition-all ${
+                          isSelected
+                            ? 'bg-[#243607] text-white'
+                            : 'bg-[#BBBEA7]/25 text-[#30280D] hover:bg-[#BBBEA7]/40'
+                        }`}
+                      >
+                        {isSelected ? 'Inspecting' : 'Inspect'}
+                      </button>
+                    )
                     return cells
                   })}
                 />}
