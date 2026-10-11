@@ -86,7 +86,7 @@ export default function Disruptions({
     ? demoRole === 'admin' || demoRole === 'dispatcher'
     : profile?.role === 'admin' || profile?.role === 'dispatcher'
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     setLoading(true)
     setLoadError('')
     setErr('')
@@ -98,7 +98,7 @@ export default function Disruptions({
         setWorld({ vehicles: demo.vehicles, deliveries: demo.deliveries, matrix: demo.matrix, locations: demo.locations })
         setCurrentPlan(demo.originalPlan)
         setDisruptions([])
-        return
+        return true
       }
 
       if (!profile?.orgId) throw new ValidationError('Your organization profile is unavailable. Sign out and sign in again, or contact your administrator.')
@@ -132,10 +132,12 @@ export default function Disruptions({
       } else {
         setWorld({ vehicles: organizationVehicles, deliveries: organizationDeliveries, matrix: {}, locations: organizationLocations })
       }
+      return true
     } catch (cause) {
       setWorld(null)
       setCurrentPlan(null)
       setLoadError((cause as Error).message || 'Unable to load organization disruption data.')
+      return false
     } finally {
       setLoading(false)
     }
@@ -261,6 +263,7 @@ export default function Disruptions({
       setErr('Your role is read-only and cannot confirm disruptions or save replanned routes.')
       return
     }
+    if (!window.confirm('Confirm this disruption and save the resulting replanned route? This writes operational records and audit history.')) return
 
     if (isDemoMode) {
       try {
@@ -339,12 +342,11 @@ export default function Disruptions({
         return
       }
 
-      setWorld(updatedWorld)
-      setCurrentPlan(savedPlan)
-      setDisruptions(previous => [...previous, res.event!].sort((a, b) => a.at - b.at))
-      setSuccess(`Disruption recorded and audited. Replanned routes were saved at ${fmtTime(savedPlan.createdAt)}.`)
       setRes(null)
       setText('')
+      const refreshed = await load()
+      if (refreshed) setSuccess(`Disruption recorded and audited. Replanned routes were saved at ${fmtTime(savedPlan.createdAt)} and refreshed from the organization database.`)
+      else setErr('The disruption and replanned route were saved, but refresh failed. Retry refresh before relying on the displayed data.')
     } catch (cause) {
       setErr(disruptionRecorded
         ? `The disruption was recorded, but a related operational update failed: ${(cause as Error).message}`

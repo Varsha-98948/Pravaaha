@@ -40,7 +40,20 @@ export default function Users({ profile = null }: { profile?: UserProfile | null
     }
   }, [profile])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (!isDemoMode && !canManage) {
+      setLoading(false)
+      return
+    }
+    void load()
+  }, [load, canManage])
+
+  if (!isDemoMode && !canManage) {
+    return <>
+      <PageHead title="Users" sub="Organization profile administration" />
+      <State kind="error" text="Only organization administrators can view or manage organization profiles." />
+    </>
+  }
 
   const saveRole = async (target: UserProfile) => {
     if (!profile || !canAdministerRoles(profile)) {

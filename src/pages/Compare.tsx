@@ -64,7 +64,7 @@ export default function Compare({ profile = null }: { profile?: UserProfile | nu
     </div>
     {loading ? <State kind="loading" text="Loading saved organization plans…" />
       : error ? <State kind="error" text={error} />
-        : !data ? <State kind="empty" text={isDemoMode ? 'Plan comparison is unavailable.' : 'At least two saved plans are required before they can be compared.'} />
+        : !data ? <State kind="empty" text={isDemoMode ? 'Plan comparison is unavailable.' : 'At least two saved plans are required.'} sub={isDemoMode ? 'The demo data provides both plans; this should always be visible.' : 'Generate a baseline plan in Route plan, then confirm a disruption in Disruptions to produce a second replanned route. The two most recently saved plans will be compared here.'} />
           : comparison ? <>
             <div className="mb-4 flex flex-wrap gap-3">
               {(['kept', 'moved', 'broken'] as const).map(key => <MetricCard key={key} label={key} value={comparison.counts[key]} sub="Saved plan comparison" />)}

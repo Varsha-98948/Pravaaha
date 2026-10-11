@@ -8,6 +8,8 @@ export default {
       },
       colors: {
         // Strict Brand Palette
+        navy: '#30280D',
+        teal: '#243607',
         brand: {
           primary: '#243607',
           secondary: '#91696E',

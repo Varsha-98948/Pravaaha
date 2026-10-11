@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Badge, Card, PageHead, State, Table, MetricCard } from '../components/ui'
-import { getDeliveries, getLocations, saveDelivery } from '../services/persistenceService'
+import { getDeliveries, getDeliveryPlan, getLocations, getVehicles, listDeliveryPlans, saveDelivery } from '../services/persistenceService'
 import { isDemoMode } from '../services/supabase'
 import type { Delivery, Location, UserProfile } from '../types'
 import { fmtWindow } from '../utils/time'
@@ -8,7 +8,8 @@ import { fmtWindow } from '../utils/time'
 export default function Deliveries({ profile = null }: { profile?: UserProfile | null }) {
   const [deliveries, setDeliveries] = useState<Delivery[] | null>(null)
   const [locations, setLocations] = useState<Location[]>([])
-  const [demoUnassigned, setDemoUnassigned] = useState<Map<string, { detail: string }>>(new Map())
+  const [assignments, setAssignments] = useState<Map<string, string>>(new Map())
+  const [hasSavedPlan, setHasSavedPlan] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [formError, setFormError] = useState('')
@@ -30,11 +31,17 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
         const samples = await import('../data/demo')
         setDeliveries(samples.deliveries)
         setLocations(samples.locations)
-        setDemoUnassigned(new Map(samples.originalPlan.unassigned.map(item => [item.deliveryId, { detail: item.detail }])))
+        setHasSavedPlan(true)
+        setAssignments(new Map([
+          ...samples.originalPlan.routes.flatMap(route => route.stops.map(stop => [stop.deliveryId, samples.vehicles.find(vehicle => vehicle.id === route.vehicleId)?.name ?? route.vehicleId] as const)),
+          ...samples.originalPlan.unassigned.map(item => [item.deliveryId, `Unassigned: ${item.detail}`] as const),
+        ]))
         return true
       } catch (cause) {
         setDeliveries(null)
         setLocations([])
+        setHasSavedPlan(false)
+        setAssignments(new Map())
         setError((cause as Error).message || 'Unable to load demo deliveries.')
         return false
       } finally {
@@ -45,22 +52,35 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
     if (!profile?.orgId) {
       setDeliveries(null)
       setLocations([])
+      setHasSavedPlan(false)
+      setAssignments(new Map())
       setLoading(false)
       setError('Your organization profile is unavailable. Sign out and sign in again, or contact your administrator.')
       return false
     }
 
     try {
-      const [organizationDeliveries, organizationLocations] = await Promise.all([
+      const [organizationDeliveries, organizationLocations, organizationVehicles, plans] = await Promise.all([
         getDeliveries(profile.orgId),
         getLocations(profile.orgId),
+        getVehicles(profile.orgId),
+        listDeliveryPlans(profile.orgId),
       ])
+      const latest = plans[0] ? await getDeliveryPlan(plans[0].id, profile.orgId) : null
       setDeliveries(organizationDeliveries)
       setLocations(organizationLocations)
+      setHasSavedPlan(latest !== null)
+      const vehicleNames = new Map(organizationVehicles.map(vehicle => [vehicle.id, vehicle.name]))
+      setAssignments(new Map([
+        ...(latest?.routes.flatMap(route => route.stops.map(stop => [stop.deliveryId, vehicleNames.get(route.vehicleId) ?? route.vehicleId] as const)) ?? []),
+        ...(latest?.unassigned.map(item => [item.deliveryId, `Unassigned: ${item.detail || item.reason}`] as const) ?? []),
+      ]))
       return true
     } catch (cause) {
       setDeliveries(null)
       setLocations([])
+      setHasSavedPlan(false)
+      setAssignments(new Map())
       setError((cause as Error).message || 'Unable to load organization deliveries.')
       return false
     } finally {
@@ -99,8 +119,8 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
       }, profile.orgId, profile)
       const refreshed = await load()
       setLocationId('')
-      if (refreshed) setSuccess('Delivery saved and organization deliveries refreshed.')
-      else setFormError('The delivery was saved, but deliveries could not be refreshed. Use Refresh to reload the list.')
+      if (refreshed) setSuccess('Delivery saved and organization data refreshed.')
+      else setFormError('The delivery was saved, but refreshed data could not be loaded. Refresh before relying on the displayed records.')
     } catch (cause) {
       setFormError((cause as Error).message || 'Unable to save this delivery. Verify the customer location and your organization permissions.')
     } finally {
@@ -164,16 +184,16 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
             : deliveries === null ? <State kind="error" text="Delivery data is unavailable." />
               : deliveries.length === 0 ? <State kind="empty" text="No deliveries are registered for this organization yet." />
                 : <Table
-                  head={isDemoMode ? ['ID', 'Customer', 'Size', 'Window', 'Priority', 'Assignment'] : ['ID', 'Customer', 'Size', 'Window', 'Priority']}
+                  head={['ID', 'Customer', 'Size', 'Service', 'Window', 'Priority', 'Assignment']}
                   rows={deliveries.map(delivery => {
-                    const missing = demoUnassigned.get(delivery.id)
+                    const assignedVehicle = assignments.get(delivery.id)
                     const cells: ReactNode[] = [
-                      delivery.id, customerName(delivery.locationId), delivery.size, fmtWindow(delivery.window),
+                      delivery.id, customerName(delivery.locationId), delivery.size, `${delivery.serviceMin} min`, fmtWindow(delivery.window),
                       <Badge key={`${delivery.id}-priority`} t={delivery.priority === 'urgent' ? 'warn' : 'mute'}>{delivery.priority}</Badge>,
                     ]
-                    if (isDemoMode) cells.push(missing
-                      ? <Badge key={`${delivery.id}-assignment`} t="bad">Unassigned: {missing.detail}</Badge>
-                      : <Badge key={`${delivery.id}-assignment`} t="ok">Assigned</Badge>)
+                    cells.push(assignedVehicle
+                      ? <Badge key={`${delivery.id}-assignment`} t={assignedVehicle.startsWith('Unassigned:') ? 'bad' : 'ok'}>{assignedVehicle.startsWith('Unassigned:') ? assignedVehicle : `Assigned to ${assignedVehicle}`}</Badge>
+                      : hasSavedPlan ? 'Not present in latest saved plan' : 'No saved plan')
                     return cells
                   })}
                 />}

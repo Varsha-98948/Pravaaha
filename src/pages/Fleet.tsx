@@ -3,6 +3,7 @@ import { Badge, Card, PageHead, State, Table, MetricCard } from '../components/u
 import { getLocations, getVehicles, saveLocation, saveVehicle } from '../services/persistenceService'
 import { isDemoMode } from '../services/supabase'
 import type { Location, UserProfile, Vehicle } from '../types'
+import { fmtTime } from '../utils/time'
 
 export default function Fleet({ profile = null }: { profile?: UserProfile | null }) {
   const [vehicles, setVehicles] = useState<Vehicle[] | null>(null)
@@ -200,7 +201,8 @@ export default function Fleet({ profile = null }: { profile?: UserProfile | null
             : vehicles === null ? <State kind="error" text="Fleet data is unavailable. Refresh to try again." />
               : vehicles.length === 0 ? <State kind="empty" text="No vehicles are registered for this organization yet." />
                 : <Table head={['Vehicle', 'Capacity', 'Depot', 'Shift', 'Status']} rows={vehicles.map(vehicle => [
-                  vehicle.name, vehicle.capacity, depotName(vehicle.depotId), `${vehicle.shiftStart}–${vehicle.shiftEnd} min`,
+                  vehicle.name, vehicle.capacity, depotName(vehicle.depotId),
+                  `${fmtTime(vehicle.shiftStart)}–${fmtTime(vehicle.shiftEnd)}`,
                   <Badge key={`${vehicle.id}-status`} t={vehicle.status === 'active' ? 'ok' : 'bad'}>{vehicle.status}</Badge>,
                 ])} />}
       </Card>

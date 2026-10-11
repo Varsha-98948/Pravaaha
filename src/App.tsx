@@ -181,6 +181,12 @@ export default function App() {
   const items = NAV.filter((n) => n.roles.includes(activeRole))
   const Cur = (items.find((n) => n.id === page) ?? items[0]).C
 
+  useEffect(() => {
+    if (!items.some((n) => n.id === page)) {
+      setPage(items[0]?.id ?? 'dash')
+    }
+  }, [items, page])
+
   return (
     <div className="flex min-h-screen">
       <aside
@@ -257,15 +263,10 @@ export default function App() {
         </div>
       </header>
       <main className="min-w-0 p-4 md:p-8">
-        {!isDemoMode && !['dash', 'del', 'fleet', 'route', 'cmp'].includes(page) && (
-          <div className="mb-4 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            This page still shows sample data. It does not load or change your organization’s live records.
-          </div>
-        )}
         {page === 'dis' ? <Disruptions profile={profile} demoRole={activeRole} />
           : page === 'del' ? <Deliveries profile={profile} />
           : page === 'fleet' ? <Fleet profile={profile} />
-              : page === 'route' ? <Routes profile={profile} />
+              : page === 'route' ? <Routes profile={profile} demoRole={activeRole} />
                 : page === 'dash' ? <Dashboard profile={profile} />
                   : page === 'cmp' ? <Compare profile={profile} />
                     : page === 'usr' ? <Users profile={profile} />
