@@ -240,6 +240,7 @@ export function validateInterpretedDisruption(
 
   const missing: string[] = Array.isArray(raw.missing) ? raw.missing.map(String) : []
   const unknownLocations: string[] = Array.isArray(raw.unknownLocations) ? raw.unknownLocations.map(String) : []
+  const unknownVehicles: string[] = Array.isArray(raw.unknownVehicles) ? raw.unknownVehicles.map(String) : []
 
   let validatedEvent: DisruptionEvent | null = null
 
@@ -252,6 +253,9 @@ export function validateInterpretedDisruption(
       }
       for (const loc of result.unknownLocations) {
         if (!unknownLocations.includes(loc)) unknownLocations.push(loc)
+      }
+      for (const veh of result.unknownVehicles) {
+        if (!unknownVehicles.includes(veh)) unknownVehicles.push(veh)
       }
       validatedEvent = null
     } else {
@@ -267,5 +271,11 @@ export function validateInterpretedDisruption(
     preview: raw.preview,
     confirmation: raw.confirmation as ConfirmationState,
     source: raw.source as 'placeholder' | 'ai',
+    unknownVehicles,
+    needsClarification: Boolean(raw.needsClarification),
+    clarificationQuestion: typeof raw.clarificationQuestion === 'string' ? raw.clarificationQuestion : undefined,
+    inferredFields: Array.isArray(raw.inferredFields) ? raw.inferredFields.map(String) : undefined,
+    explicitFields: Array.isArray(raw.explicitFields) ? raw.explicitFields.map(String) : undefined,
+    error: typeof raw.error === 'string' ? raw.error : undefined,
   }
 }
