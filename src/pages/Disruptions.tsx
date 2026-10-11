@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Card, PageHead, State, Badge } from '../components/ui'
+import { Card, PageHead, State, Badge, SpatialButton } from '../components/ui'
 import {
   defaultDisruptionInterpreter,
   getAiInterpreterStatus,
@@ -9,9 +9,21 @@ import { interpretIncidentPreview } from '../services/disruptionService'
 import { replan } from '../engine/replan'
 import { applyDisruption, type World } from '../engine/disruptions'
 import { originalPlan, vehicles, deliveries, matrix, locations, locName } from '../data/demo'
+import { SpatialRouteCanvas } from '../components/SpatialRouteCanvas'
 import { fmtTime } from '../utils/time'
 import type { DeliveryPlan, DisruptionEvent, InterpretedDisruption } from '../types'
-import { Bot, CheckCircle2, HelpCircle, AlertCircle, Sparkles } from 'lucide-react'
+import {
+  Bot,
+  CheckCircle2,
+  HelpCircle,
+  AlertCircle,
+  Sparkles,
+  Zap,
+  ArrowRight,
+  ShieldAlert,
+  Clock,
+  RotateCcw,
+} from 'lucide-react'
 
 const QUICK_DISRUPTIONS: Array<{ label: string; interpretation: InterpretedDisruption }> = [
   {
@@ -70,6 +82,7 @@ export default function Disruptions() {
   const [err, setErr] = useState('')
   const [success, setSuccess] = useState('')
   const [interpreting, setInterpreting] = useState(false)
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
   const [aiStatus, setAiStatus] = useState<AiStatusResult>({
     configured: false,
     provider: null,
@@ -161,7 +174,7 @@ export default function Disruptions() {
       setCurrentPlan(replanned)
       setAppliedEvents((prev) => [...prev, event])
       setSuccess(
-        `Disruption confirmed and applied at ${fmtTime(event.at)} (${event.at}m). Plan updated with ${replanned.routes.length} vehicle routes.`
+        `Disruption confirmed and applied at ${fmtTime(event.at)} (${event.at}m). Route plan updated with ${replanned.routes.length} vehicle trajectories.`
       )
       setRes(null)
       setText('')
@@ -171,84 +184,102 @@ export default function Disruptions() {
     }
   }
 
+  // Active closure helper for canvas highlight
+  const activeClosure = appliedEvents.find((e) => e.type === 'road_closure') as
+    | { from: string; to: string; at: number }
+    | undefined
+
   return (
-    <>
+    <div className="space-y-6">
       <PageHead
-        title="Disruptions"
-        sub="Describe or select what happened. Nothing is applied to routes until explicitly confirmed."
+        title="Disruptions & Dynamic Replanning"
+        sub="Incident intake, natural-language AI interpretation, and deterministic route plan regeneration."
+        badge={
+          <Badge t="ok" dot>
+            {appliedEvents.length} Applied Events
+          </Badge>
+        }
       />
 
-      <div className="space-y-6">
-        {/* AI Integration Status Bar */}
-        <div
-          className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3.5 text-xs ${
-            aiStatus.configured
-              ? 'border-teal-200 bg-teal-50/60 text-slate-700'
-              : 'border-amber-200 bg-amber-50/60 text-amber-900'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            {aiStatus.configured ? (
-              <>
-                <Sparkles size={16} className="text-teal" />
-                <span className="font-semibold text-slate-800">
-                  AI Interpreter Active:
-                </span>
-                <span className="font-medium text-teal capitalize">
+      {/* AI Gateway Status Banner */}
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 text-xs transition-all shadow-sm ${
+          aiStatus.configured
+            ? 'border-[#243607]/25 bg-[#243607]/07 text-[#30280D]'
+            : 'border-[#91696E]/25 bg-[#91696E]/08 text-[#30280D]'
+        }`}
+      >
+        <div className="flex items-center gap-2.5">
+          {aiStatus.configured ? (
+            <>
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#243607] text-[#f2f3ec] shadow-sm">
+                <Sparkles size={15} />
+              </div>
+              <div>
+                <span className="font-bold text-[#30280D]">
+                  AI Disruption Gateway Online:
+                </span>{' '}
+                <span className="font-medium text-[#243607] capitalize">
                   {aiStatus.provider} ({aiStatus.model})
                 </span>
-              </>
-            ) : (
-              <>
-                <AlertCircle size={16} className="text-amber-700" />
-                <div>
-                  <span className="font-semibold text-amber-900">
-                    AI Interpreter Not Configured:
-                  </span>{' '}
-                  <span className="text-amber-800">
-                    Natural-language interpretation requires setting{' '}
-                    <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-[11px]">
-                      AI_API_KEY
-                    </code>{' '}
-                    (or{' '}
-                    <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-[11px]">
-                      GEMINI_API_KEY
-                    </code>
-                    ) in <code className="font-mono">.env</code>.
-                  </span>
-                </div>
-              </>
-            )}
+                <span className="ml-2 text-[#30280D]/60 hidden sm:inline">
+                  — Structured JSON natural-language parser active
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#91696E] text-[#f2f3ec] shadow-sm">
+                <AlertCircle size={15} />
+              </div>
+              <div>
+                <span className="font-bold text-[#30280D]">
+                  AI Gateway Offline:
+                </span>{' '}
+                <span className="text-[#30280D]/80">
+                  Set <code className="rounded bg-black/10 px-1 py-0.5 font-mono text-[11px]">AI_API_KEY</code> in <code className="font-mono">.env</code>. Quick Presets below remain 100% operational.
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+        <Badge t={aiStatus.configured ? 'ok' : 'warn'}>
+          {aiStatus.configured ? 'Active' : 'Setup Required'}
+        </Badge>
+      </div>
+
+      {/* Incident Intake & Preview Console */}
+      <Card
+        title="Incident Intake & Interpretation Console"
+        sub="Describe unexpected road closures, breakdowns, or urgent deliveries. Nothing modifies active routes until explicitly confirmed."
+      >
+        {/* Quick Presets */}
+        <div className="mb-4">
+          <span className="text-xs font-bold uppercase tracking-wider text-[#30280D]/65">
+            Tactical Incident Presets:
+          </span>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {QUICK_DISRUPTIONS.map((q) => (
+              <button
+                key={q.label}
+                onClick={() => {
+                  setText(q.interpretation.rawText)
+                  setRes(q.interpretation)
+                  setErr('')
+                  setSuccess('')
+                }}
+                className="flex items-center gap-1.5 rounded-lg border border-[#30280D]/15 bg-white/80 px-3 py-1.5 text-xs font-medium text-[#30280D] hover:bg-[#243607]/08 hover:border-[#243607]/40 hover:-translate-y-0.5 transition-all shadow-sm"
+              >
+                <Zap size={13} className="text-[#91696E]" />
+                {q.label}
+              </button>
+            ))}
           </div>
-          <Badge t={aiStatus.configured ? 'ok' : 'warn'}>
-            {aiStatus.configured ? 'Configured' : 'Setup Required'}
-          </Badge>
         </div>
 
-        <Card title="Incident Intake & Preview">
-          <div className="mb-4">
-            <span className="text-xs font-medium text-slate-500">
-              Quick Incident Scenarios (Manual Preset Fallback):
-            </span>
-            <div className="mt-1.5 flex flex-wrap gap-2">
-              {QUICK_DISRUPTIONS.map((q) => (
-                <button
-                  key={q.label}
-                  onClick={() => {
-                    setText(q.interpretation.rawText)
-                    setRes(q.interpretation)
-                    setErr('')
-                    setSuccess('')
-                  }}
-                  className="rounded border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-100 transition-colors"
-                >
-                  {q.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <label className="block text-xs font-medium text-slate-600 mb-1">
+        {/* Textarea Input */}
+        <div className="space-y-1.5">
+          <label className="block text-xs font-semibold text-[#30280D]/80">
             Natural-Language Incident Report:
           </label>
           <textarea
@@ -256,288 +287,199 @@ export default function Disruptions() {
             onChange={(e) => setText(e.target.value)}
             rows={3}
             placeholder="e.g. Van 2 broke down near Harbor Grocers at 09:30, or Road closure between Central Depot and Harbor Grocers starting at 09:00"
-            className="w-full rounded border border-slate-300 p-2.5 text-sm focus:border-teal focus:outline-none focus:ring-1 focus:ring-teal"
+            className="w-full rounded-xl border border-[#30280D]/20 bg-white p-3 text-sm text-[#30280D] placeholder-[#30280D]/40 focus:border-[#243607] focus:outline-none focus:ring-2 focus:ring-[#243607]/15 transition-all shadow-spatial-inset"
           />
+        </div>
 
-          <div className="mt-2.5 flex items-center gap-3">
-            <button
-              onClick={run}
-              disabled={!text.trim() || interpreting}
-              className="inline-flex items-center gap-2 rounded bg-teal px-4 py-1.5 text-sm font-medium text-white hover:bg-teal/90 disabled:opacity-40 transition-colors"
-            >
-              <Bot size={15} />
-              {interpreting ? 'Interpreting...' : 'Interpret incident'}
-            </button>
-            {interpreting && (
-              <span className="text-xs text-slate-500 animate-pulse">
-                Calling AI interpreter...
-              </span>
-            )}
-          </div>
-
-          {/* Interpretation Result Card */}
-          {res && (
-            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/70 p-4 text-sm space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Badge t={res.source === 'ai' ? 'ok' : 'warn'}>
-                    {res.source === 'ai' ? 'AI Interpreted' : 'Preset / Fallback'}
-                  </Badge>
-                  <span className="font-semibold text-slate-800">{res.preview}</span>
-                </div>
-              </div>
-
-              {/* State: Needs Clarification */}
-              {res.needsClarification && (
-                <div className="flex items-start gap-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-                  <HelpCircle size={16} className="shrink-0 text-amber-700 mt-0.5" />
-                  <div>
-                    <div className="font-semibold text-amber-900">
-                      Clarification Needed
-                    </div>
-                    <p className="mt-0.5 text-amber-800">
-                      {res.clarificationQuestion ||
-                        'The incident report could not be mapped to an unambiguous disruption. Please provide more specifics.'}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* State: Unknown Entities or Unrecognized Inputs */}
-              {(res.unknownLocations.length > 0 ||
-                (res.unknownVehicles && res.unknownVehicles.length > 0)) && (
-                <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-800 space-y-1">
-                  <div className="font-semibold">Unrecognized Entities:</div>
-                  {res.unknownLocations.length > 0 && (
-                    <div>
-                      • Unknown location(s):{' '}
-                      <span className="font-mono font-medium">
-                        {res.unknownLocations.join(', ')}
-                      </span>{' '}
-                      (Not in current organization network)
-                    </div>
-                  )}
-                  {res.unknownVehicles && res.unknownVehicles.length > 0 && (
-                    <div>
-                      • Unknown vehicle(s):{' '}
-                      <span className="font-mono font-medium">
-                        {res.unknownVehicles.join(', ')}
-                      </span>{' '}
-                      (Not in current active fleet)
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* State: Provider Error */}
-              {res.error && (
-                <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-800">
-                  <span className="font-semibold">Provider Communication Issue:</span>{' '}
-                  {res.error}
-                </div>
-              )}
-
-              {/* State: Missing Details */}
-              {res.missing.length > 0 && !res.error && (
-                <div className="text-xs text-amber-700">
-                  <span className="font-semibold">Missing parameters:</span>{' '}
-                  {res.missing.join(' · ')}
-                </div>
-              )}
-
-              {/* State: Successfully Parsed Event */}
-              {res.event && (
-                <div className="rounded border border-slate-200 bg-white p-3 text-xs text-slate-700 space-y-1.5 shadow-sm">
-                  <div className="font-semibold text-slate-900 flex items-center gap-1.5">
-                    <CheckCircle2 size={14} className="text-teal" />
-                    Structured Disruption Event Preview:
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
-                    <div>
-                      <span className="text-slate-500">Event Type:</span>{' '}
-                      <span className="font-mono font-medium text-slate-800">
-                        {res.event.type}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">Effective Time:</span>{' '}
-                      <span className="font-medium text-slate-800">
-                        {fmtTime(res.event.at)} ({res.event.at}m)
-                      </span>
-                    </div>
-
-                    {res.event.type === 'road_closure' && (
-                      <div className="col-span-2">
-                        <span className="text-slate-500">Closed Roadway:</span>{' '}
-                        <span className="font-medium text-slate-800">
-                          {locName(res.event.from)} ({res.event.from}) →{' '}
-                          {locName(res.event.to)} ({res.event.to})
-                        </span>
-                      </div>
-                    )}
-
-                    {res.event.type === 'vehicle_failure' && (
-                      <div className="col-span-2">
-                        <span className="text-slate-500">Failed Vehicle:</span>{' '}
-                        <span className="font-medium text-slate-800">
-                          {res.event.vehicleId}
-                          {res.event.locationId
-                            ? ` at ${locName(res.event.locationId)}`
-                            : ''}
-                        </span>
-                      </div>
-                    )}
-
-                    {res.event.type === 'urgent_delivery' && (
-                      <div className="col-span-2 space-y-1">
-                        <div>
-                          <span className="text-slate-500">Destination:</span>{' '}
-                          <span className="font-medium text-slate-800">
-                            {locName(res.event.delivery.locationId)} (
-                            {res.event.delivery.locationId})
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Delivery Window:</span>{' '}
-                          <span className="font-medium text-slate-800">
-                            {fmtTime(res.event.delivery.window.start)}–
-                            {fmtTime(res.event.delivery.window.end)} · Size:{' '}
-                            {res.event.delivery.size} units
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {res.inferredFields && res.inferredFields.length > 0 && (
-                    <div className="pt-1.5 text-[11px] text-slate-500 italic">
-                      Inferred with standard defaults: {res.inferredFields.join(', ')}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Actions */}
-              <div className="mt-3 flex items-center gap-2 pt-1">
-                {res.event ? (
-                  <button
-                    onClick={confirm}
-                    className="rounded bg-navy px-3.5 py-1.5 text-sm font-medium text-white hover:bg-navy/90 transition-colors"
-                  >
-                    Confirm and replan
-                  </button>
-                ) : (
-                  <div className="text-xs text-slate-500 italic">
-                    Cannot confirm: an unambiguous disruption event must be resolved first.
-                  </div>
-                )}
-                <button
-                  onClick={() => {
-                    setRes(null)
-                    setErr('')
-                  }}
-                  className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 transition-colors"
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
+        {/* Submit Button */}
+        <div className="mt-3 flex items-center gap-3">
+          <SpatialButton
+            variant="primary"
+            onClick={run}
+            disabled={!text.trim() || interpreting}
+            icon={<Bot size={15} />}
+          >
+            {interpreting ? 'Interpreting Report...' : 'Interpret Incident'}
+          </SpatialButton>
+          {interpreting && (
+            <span className="text-xs text-[#243607] font-medium animate-pulse">
+              Parsing with AI provider...
+            </span>
           )}
+        </div>
 
-          {success && <State kind="success" text={success} />}
-          {err && <State kind="error" text={err} />}
-        </Card>
-
-        {appliedEvents.length > 0 && (
-          <Card title="Applied Disruptions">
-            <div className="space-y-1.5">
-              {appliedEvents.map((ev) => (
-                <div key={ev.id} className="flex items-center gap-2 text-xs text-slate-700">
-                  <Badge t="bad">{ev.type}</Badge>
-                  <span>
-                    at {fmtTime(ev.at)} ({ev.at}m) — ID: {ev.id}
-                  </span>
-                </div>
-              ))}
+        {/* Interpretation Result Card */}
+        {res && (
+          <div className="mt-5 rounded-xl border border-[#30280D]/15 bg-[#f8f9f4] p-4 text-sm space-y-3.5 shadow-spatial-md animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-[#30280D]/10 pb-3">
+              <div className="flex items-center gap-2">
+                <Badge t={res.source === 'ai' ? 'ok' : 'warn'}>
+                  {res.source === 'ai' ? 'AI Structured' : 'Manual Preset'}
+                </Badge>
+                <span className="font-bold text-sm text-[#30280D]">{res.preview}</span>
+              </div>
             </div>
-          </Card>
+
+            {/* State: Needs Clarification */}
+            {res.needsClarification && (
+              <div className="flex items-start gap-2.5 rounded-lg border border-[#91696E]/30 bg-[#91696E]/10 p-3 text-xs text-[#30280D]">
+                <HelpCircle size={16} className="shrink-0 text-[#91696E] mt-0.5" />
+                <div>
+                  <div className="font-bold text-[#91696E]">Clarification Required</div>
+                  <p className="mt-0.5 leading-relaxed text-[#30280D]/85">
+                    {res.clarificationQuestion ||
+                      'The incident report is ambiguous. Please clarify locations or affected vehicles.'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* State: Unrecognized Entities */}
+            {(res.unknownLocations.length > 0 || (res.unknownVehicles && res.unknownVehicles.length > 0)) && (
+              <div className="rounded-lg border border-[#91696E]/30 bg-[#91696E]/10 p-3 text-xs space-y-1 text-[#30280D]">
+                <div className="font-bold text-[#91696E]">Unrecognized Entity Scope:</div>
+                {res.unknownLocations.length > 0 && (
+                  <div>• Unknown location(s): <span className="font-mono font-semibold">{res.unknownLocations.join(', ')}</span></div>
+                )}
+                {res.unknownVehicles && res.unknownVehicles.length > 0 && (
+                  <div>• Unknown vehicle(s): <span className="font-mono font-semibold">{res.unknownVehicles.join(', ')}</span></div>
+                )}
+              </div>
+            )}
+
+            {/* State: Successfully Parsed Event Object */}
+            {res.event && (
+              <div className="rounded-lg border border-[#30280D]/10 bg-white p-3.5 text-xs text-[#30280D] space-y-2 shadow-sm">
+                <div className="font-bold text-xs flex items-center gap-1.5 text-[#243607]">
+                  <CheckCircle2 size={15} />
+                  Structured Disruption Event Schema:
+                </div>
+                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-[#30280D]/06">
+                  <div>
+                    <span className="text-[#30280D]/60 block">Event Type</span>
+                    <span className="font-mono font-bold text-sm text-[#30280D]">
+                      {res.event.type}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[#30280D]/60 block">Effective Time</span>
+                    <span className="font-bold text-sm text-[#30280D]">
+                      {fmtTime(res.event.at)} ({res.event.at}m)
+                    </span>
+                  </div>
+
+                  {res.event.type === 'road_closure' && (
+                    <div className="col-span-2 rounded bg-[#f2f3ec] p-2">
+                      <span className="text-[#30280D]/60 block">Closed Road Segment</span>
+                      <span className="font-semibold text-xs text-[#30280D]">
+                        {locName(res.event.from)} ({res.event.from}) → {locName(res.event.to)} ({res.event.to})
+                      </span>
+                    </div>
+                  )}
+
+                  {res.event.type === 'vehicle_failure' && (
+                    <div className="col-span-2 rounded bg-[#f2f3ec] p-2">
+                      <span className="text-[#30280D]/60 block">Failed Vehicle</span>
+                      <span className="font-semibold text-xs text-[#30280D]">
+                        {res.event.vehicleId} {res.event.locationId ? `at ${locName(res.event.locationId)}` : ''}
+                      </span>
+                    </div>
+                  )}
+
+                  {res.event.type === 'urgent_delivery' && (
+                    <div className="col-span-2 rounded bg-[#f2f3ec] p-2 space-y-1">
+                      <div>
+                        <span className="text-[#30280D]/60">Destination:</span>{' '}
+                        <span className="font-semibold">{locName(res.event.delivery.locationId)}</span>
+                      </div>
+                      <div>
+                        <span className="text-[#30280D]/60">Time Window:</span>{' '}
+                        <span className="font-semibold">
+                          {fmtTime(res.event.delivery.window.start)}–{fmtTime(res.event.delivery.window.end)} · Size: {res.event.delivery.size} units
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Decision Controls */}
+            <div className="pt-2 flex flex-wrap items-center gap-2.5">
+              {res.event ? (
+                <SpatialButton variant="primary" onClick={confirm}>
+                  Confirm and Replan Routes
+                </SpatialButton>
+              ) : (
+                <span className="text-xs text-[#30280D]/60 italic">
+                  Cannot replan: a valid disruption event must be resolved first.
+                </span>
+              )}
+              <SpatialButton
+                variant="outline"
+                size="md"
+                onClick={() => {
+                  setRes(null)
+                  setErr('')
+                }}
+              >
+                Dismiss
+              </SpatialButton>
+            </div>
+          </div>
         )}
 
-        <Card title={`Active Plan (${currentPlan.label})`}>
-          <div className="mb-4 flex flex-wrap gap-4 text-xs text-slate-600">
-            <div>
-              <span className="font-semibold text-slate-800">Routes:</span> {currentPlan.routes.length}
-            </div>
-            <div>
-              <span className="font-semibold text-slate-800">Scheduled stops:</span>{' '}
-              {currentPlan.routes.reduce((acc, r) => acc + r.stops.length, 0)}
-            </div>
-            <div>
-              <span className="font-semibold text-slate-800">Unassigned deliveries:</span>{' '}
-              {currentPlan.unassigned.length}
-            </div>
-          </div>
+        {success && <div className="mt-4"><State kind="success" text={success} /></div>}
+        {err && <div className="mt-4"><State kind="error" text={err} /></div>}
+      </Card>
 
-          <div className="grid gap-4 lg:grid-cols-3">
-            {currentPlan.routes.map((r) => {
-              const v = worldState.vehicles.find((x) => x.id === r.vehicleId)
-              const cap = v?.capacity ?? 0
-              return (
-                <div key={r.vehicleId} className="rounded-lg border border-slate-200 bg-slate-50/50 p-3">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="font-semibold text-slate-800">{v?.name ?? r.vehicleId}</span>
-                    <Badge t={v?.status === 'failed' ? 'bad' : 'mute'}>
-                      {r.load}/{cap} load {v?.status === 'failed' ? '(failed)' : ''}
-                    </Badge>
-                  </div>
-                  <ol className="space-y-2 border-l-2 border-teal/40 pl-3">
-                    {r.stops.map((s) => (
-                      <li key={s.deliveryId} className="text-xs">
-                        <div className="font-medium text-slate-800">
-                          {fmtTime(s.serviceStart)} {locName(s.locationId)}{' '}
-                          <Badge
-                            t={
-                              s.status === 'completed'
-                                ? 'ok'
-                                : s.status === 'late'
-                                ? 'warn'
-                                : s.status === 'skipped'
-                                ? 'bad'
-                                : 'mute'
-                            }
-                          >
-                            {s.status}
-                          </Badge>
-                        </div>
-                        <div className="text-slate-500">
-                          Arr {fmtTime(s.arrival)}
-                          {s.waitMin > 0 && ` · waits ${s.waitMin}m`} · Dep {fmtTime(s.departure)}
-                        </div>
-                      </li>
-                    ))}
-                    {r.stops.length === 0 && <li className="text-xs text-slate-400">No stops assigned</li>}
-                  </ol>
+      {/* Applied Disruptions Timeline */}
+      {appliedEvents.length > 0 && (
+        <Card
+          title="Applied Disruptions Journal"
+          sub="Chronological sequence of disruptions currently incorporated into the route engine"
+        >
+          <div className="space-y-2">
+            {appliedEvents.map((ev, i) => (
+              <div
+                key={ev.id}
+                className="flex items-center justify-between rounded-xl border border-[#30280D]/10 bg-white p-3 text-xs shadow-sm"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="font-mono font-bold text-[#30280D]/50">#{i + 1}</span>
+                  <Badge t="bad">{ev.type}</Badge>
+                  <span className="font-bold text-[#30280D]">
+                    at {fmtTime(ev.at)} ({ev.at}m)
+                  </span>
+                  <span className="font-mono text-[#30280D]/60 text-[11px]">
+                    ID: {ev.id}
+                  </span>
                 </div>
-              )
-            })}
-          </div>
-
-          {currentPlan.unassigned.length > 0 && (
-            <div className="mt-4 border-t border-slate-200 pt-3">
-              <div className="mb-2 text-xs font-semibold text-slate-700">Unassigned Deliveries:</div>
-              <div className="flex flex-wrap gap-2">
-                {currentPlan.unassigned.map((u) => (
-                  <div key={u.deliveryId} className="rounded border border-red-200 bg-red-50 p-2 text-xs">
-                    <span className="font-semibold text-red-800">{u.deliveryId}:</span>{' '}
-                    <Badge t="bad">{u.reason}</Badge>
-                    <div className="mt-0.5 text-slate-600">{u.detail}</div>
-                  </div>
-                ))}
+                <Badge t="ok">Active in Model</Badge>
               </div>
-            </div>
-          )}
+            ))}
+          </div>
         </Card>
+      )}
+
+      {/* Spatial Route Network with Dynamic Replanning View */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-bold tracking-tight uppercase text-[#30280D]/80">
+            Current Plan Visualizer ({currentPlan.label})
+          </h2>
+          <span className="text-xs text-[#30280D]/60 font-medium">
+            Updated immediately upon confirmed replan
+          </span>
+        </div>
+        <SpatialRouteCanvas
+          plan={currentPlan}
+          vehicles={worldState.vehicles}
+          selectedVehicleId={selectedVehicleId}
+          onSelectVehicle={setSelectedVehicleId}
+          highlightDisruption={activeClosure}
+        />
       </div>
-    </>
+    </div>
   )
 }
