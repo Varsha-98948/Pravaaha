@@ -3,8 +3,8 @@
  * Pravaaha Data Integration Service Tests
  * =============================================================================
  *
- * NOTE: THESE TESTS WERE AUTHORED FOR SERVICE VALIDATION BOUNDARIES AND
- * HAVE INTENTIONALLY NOT BEEN EXECUTED PER THE TASK EXECUTION CONSTRAINTS.
+ * Service/database boundaries are exercised with mocked clients; these tests
+ * never connect to the configured Supabase project.
  *
  * Covers:
  * 1. Database-to-TypeScript field mapping (snake_case <-> camelCase, time units, route stops, loads)
@@ -19,6 +19,20 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+const { getSupabaseClientMock } = vi.hoisted(() => ({
+  getSupabaseClientMock: vi.fn(),
+}))
+
+vi.mock('../src/services/supabase', () => ({
+  getSupabaseClient: getSupabaseClientMock,
+  isDemoMode: false,
+}))
+
+beforeEach(() => {
+  getSupabaseClientMock.mockReset()
+})
+
 import type {
   Delivery,
   DeliveryPlan,
@@ -28,7 +42,6 @@ import type {
   Vehicle,
 } from '../src/types'
 import {
-  ConfigurationError,
   AuthenticationError,
   AuthorizationError,
   OrganizationMismatchError,
@@ -702,18 +715,15 @@ describe('Migration 003 compat: text ID roundtripping through mappers', () => {
 // =============================================================================
 // Migration 003 compat: confirm_disruption_tx RPC parameter shape
 // =============================================================================
-// Verify that the payload built in disruptionService.confirmDisruption() passes
-// text values (not UUIDs) for p_disruption_id, matching the new RPC signature.
-// Since no live Supabase instance is available, these tests exercise the payload
-// construction path up to the point where ConfigurationError is thrown by
-// getSupabaseClient() in demo mode.
+// Verify the application sends text operational IDs to the RPC without making
+// a live Supabase request. These tests cover the caller contract, not PostgreSQL.
 // =============================================================================
 
 describe('Migration 003 compat: confirm_disruption_tx RPC parameter types', () => {
   const knownLocations = ['depot', 'c1', 'c2']
   const knownVehicles = ['v1', 'v2']
 
-  it('throws ConfigurationError in demo mode rather than passing a UUID-typed ID to the RPC', async () => {
+  it('passes a short vehicle-failure disruption ID as text to the RPC', async () => {
     const interpreted = {
       rawText: 'Van 2 broke down',
       event: {
@@ -737,21 +747,30 @@ describe('Migration 003 compat: confirm_disruption_tx RPC parameter types', () =
       role: 'dispatcher' as const,
     }
 
-    // In demo mode, ConfigurationError is raised before any RPC call is attempted.
-    // This confirms the service correctly reaches the RPC call point and the
-    // disruption ID ('dis-v2-fail') is a text string — not cast to uuid.
-    await expect(
-      confirmDisruption({
-        interpreted,
-        orgId: 'org-1',
-        actorProfile: dispatcher,
-        knownLocationIds: knownLocations,
-        knownVehicleIds: knownVehicles,
-      })
-    ).rejects.toThrow(ConfigurationError)
+    const rpc = vi.fn().mockResolvedValue({
+      data: { disruption_id: 'dis-v2-fail', audit_id: 'audit-1', confirmed_by: 'u-1', confirmed_at: '2025-01-01T00:00:00Z' },
+      error: null,
+    })
+    getSupabaseClientMock.mockReturnValue({ rpc })
+
+    await confirmDisruption({
+      interpreted,
+      orgId: 'org-1',
+      actorProfile: dispatcher,
+      knownLocationIds: knownLocations,
+      knownVehicleIds: knownVehicles,
+    })
+
+    expect(rpc).toHaveBeenCalledWith('confirm_disruption_tx', {
+      p_disruption_id: 'dis-v2-fail',
+      p_raw_text: 'Van 2 broke down',
+      p_type: 'vehicle_failure',
+      p_payload: { vehicleId: 'v2' },
+      p_at_min: 90,
+    })
   })
 
-  it('throws ConfigurationError for urgent_delivery disruption with short delivery/location IDs', async () => {
+  it('passes short urgent-delivery and location IDs as text to the RPC', async () => {
     const interpreted = {
       rawText: 'Urgent order for Eastside Florist',
       event: {
@@ -782,14 +801,26 @@ describe('Migration 003 compat: confirm_disruption_tx RPC parameter types', () =
       role: 'admin' as const,
     }
 
-    await expect(
-      confirmDisruption({
-        interpreted,
-        orgId: 'org-1',
-        actorProfile: admin,
-        knownLocationIds: ['depot', 'c8'],
-        knownVehicleIds: knownVehicles,
-      })
-    ).rejects.toThrow(ConfigurationError)
+    const rpc = vi.fn().mockResolvedValue({
+      data: { disruption_id: 'dis-urgent-c8', audit_id: 'audit-2', confirmed_by: 'u-1', confirmed_at: '2025-01-01T00:00:00Z' },
+      error: null,
+    })
+    getSupabaseClientMock.mockReturnValue({ rpc })
+
+    await confirmDisruption({
+      interpreted,
+      orgId: 'org-1',
+      actorProfile: admin,
+      knownLocationIds: ['depot', 'c8'],
+      knownVehicleIds: knownVehicles,
+    })
+
+    expect(rpc).toHaveBeenCalledWith('confirm_disruption_tx', {
+      p_disruption_id: 'dis-urgent-c8',
+      p_raw_text: 'Urgent order for Eastside Florist',
+      p_type: 'urgent_delivery',
+      p_payload: { delivery: interpreted.event.delivery },
+      p_at_min: 120,
+    })
   })
 })

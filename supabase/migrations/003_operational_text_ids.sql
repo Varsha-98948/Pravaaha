@@ -33,7 +33,8 @@
 --
 -- Safety:
 --   Existing data is preserved; ::text cast on uuid values is lossless.
---   All names use DROP … IF EXISTS to tolerate partial prior applies safely.
+--   DROP … IF EXISTS protects named drops only; this migration assumes the
+--   complete schema from migrations 001 and 002 and is not a partial-repair tool.
 --   profiles.id and organizations.id are untouched.
 -- =============================================================================
 
@@ -77,8 +78,12 @@ alter table plan_stops
   drop constraint if exists plan_stops_vehicle_id_fkey,
   drop constraint if exists plan_stops_delivery_id_fkey;
 
--- disruptions.confirmed_by stays uuid; keep disruptions_confirmed_by_org_fk and
--- disruptions_confirmed_by_fkey intact — they do not reference a column being changed.
+-- confirmed_by stays uuid, but repair both constraints from the original 002
+-- definition. The simple FK conflicts with the composite action, and the
+-- composite action must null confirmed_by without nulling the required org_id.
+alter table disruptions
+  drop constraint if exists disruptions_confirmed_by_fkey,
+  drop constraint if exists disruptions_confirmed_by_org_fk;
 
 -- -----------------------------------------------------------------------------
 -- STEP 2: Drop composite unique constraints on PKs being converted
@@ -218,8 +223,11 @@ alter table audit_logs
     foreign key (disruption_id)
     references disruptions(id) on delete set null;
 
--- disruptions.confirmed_by and disruptions_confirmed_by_org_fk are unchanged
--- (confirmed_by references profiles.id which stays uuid).
+-- confirmed_by remains uuid, but use the corrected column-specific action.
+alter table disruptions
+  add constraint disruptions_confirmed_by_org_fk
+    foreign key (confirmed_by, org_id)
+    references profiles(id, org_id) on delete set null (confirmed_by);
 
 -- -----------------------------------------------------------------------------
 -- STEP 6: Replace RPC functions with text ID signatures
