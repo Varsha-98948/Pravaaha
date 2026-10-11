@@ -32,8 +32,10 @@ import {
   ConfigurationError,
   DatabaseError,
   NotFoundError,
+  OrganizationMismatchError,
   ValidationError,
 } from './errors'
+import { requireRole } from './authService'
 import { getSupabaseClient, isDemoMode } from './supabase'
 import {
   auditRecordToDb,
@@ -71,6 +73,14 @@ function checkWriteAllowed() {
   if (isDemoMode) {
     throw new ConfigurationError('Cannot persist data in demo mode: Supabase is not configured.')
   }
+}
+
+function requireOperationalActor(orgId: string, actorProfile: UserProfile) {
+  if (!actorProfile?.id) throw new ValidationError('An authenticated actor profile is required.')
+  if (actorProfile.orgId !== orgId) {
+    throw new OrganizationMismatchError(`User organization '${actorProfile.orgId}' does not match target organization '${orgId}'.`)
+  }
+  requireRole(actorProfile, ['admin', 'dispatcher'])
 }
 
 // =============================================================================
@@ -119,19 +129,23 @@ export async function updateUserProfile(
   userId: string,
   orgId: string,
   updates: { name?: string; role?: Role },
-  actorRole: Role
+  actorProfile: UserProfile
 ): Promise<UserProfile> {
   checkWriteAllowed()
   if (!userId || !orgId) throw new ValidationError('userId and orgId are required.')
-
-  if (updates.role && actorRole !== 'admin') {
-    throw new AuthorizationError('Only administrators can change user roles.')
+  if (!actorProfile?.id) throw new ValidationError('An authenticated actor profile is required.')
+  if (actorProfile.orgId !== orgId) {
+    throw new OrganizationMismatchError(`User organization '${actorProfile.orgId}' does not match target organization '${orgId}'.`)
+  }
+  requireRole(actorProfile, ['admin'])
+  if (updates.name === undefined && updates.role === undefined) {
+    throw new ValidationError('At least one profile field must be updated.')
   }
 
   const client = getSupabaseClient()
   const payload: Partial<DbProfileRow> = {}
-  if (updates.name) payload.name = updates.name
-  if (updates.role) payload.role = updates.role
+  if (updates.name !== undefined) payload.name = updates.name
+  if (updates.role !== undefined) payload.role = updates.role
 
   const { data, error } = await client
     .from('profiles')
@@ -168,9 +182,13 @@ export async function getLocations(orgId: string): Promise<Location[]> {
   return (data as DbLocationRow[]).map(dbToLocation)
 }
 
-export async function saveLocation(location: Location, orgId: string): Promise<Location> {
+export async function saveLocation(location: Location, orgId: string, actorProfile: UserProfile): Promise<Location> {
   checkWriteAllowed()
   if (!orgId) throw new ValidationError('orgId is required.')
+  requireOperationalActor(orgId, actorProfile)
+  if (!location?.id || !location.name?.trim() || !['depot', 'customer'].includes(location.kind)) {
+    throw new ValidationError('A location ID, name, and valid location kind are required.')
+  }
   const client = getSupabaseClient()
 
   const row = locationToDb(location, orgId)
@@ -207,9 +225,17 @@ export async function getVehicles(orgId: string): Promise<Vehicle[]> {
   return (data as DbVehicleRow[]).map(dbToVehicle)
 }
 
-export async function saveVehicle(vehicle: Vehicle, orgId: string): Promise<Vehicle> {
+export async function saveVehicle(vehicle: Vehicle, orgId: string, actorProfile: UserProfile): Promise<Vehicle> {
   checkWriteAllowed()
   if (!orgId) throw new ValidationError('orgId is required.')
+  requireOperationalActor(orgId, actorProfile)
+  if (!vehicle?.id || !vehicle.name?.trim() || !vehicle.depotId
+    || !Number.isInteger(vehicle.capacity) || vehicle.capacity <= 0
+    || !Number.isInteger(vehicle.shiftStart) || !Number.isInteger(vehicle.shiftEnd)
+    || vehicle.shiftEnd <= vehicle.shiftStart
+    || !['active', 'failed'].includes(vehicle.status)) {
+    throw new ValidationError('Vehicle name, depot, positive integer capacity, and a valid shift range are required.')
+  }
   const client = getSupabaseClient()
 
   const row = vehicleToDb(vehicle, orgId)
@@ -230,21 +256,28 @@ export async function updateVehicleStatus(
   vehicleId: string,
   orgId: string,
   status: 'active' | 'failed',
+  actorRole: Role,
   actorId?: string
 ): Promise<void> {
   checkWriteAllowed()
   if (!vehicleId || !orgId) throw new ValidationError('vehicleId and orgId are required.')
+  if (actorRole !== 'admin' && actorRole !== 'dispatcher') {
+    throw new AuthorizationError('Only administrators and dispatchers can update vehicle status.')
+  }
   const client = getSupabaseClient()
 
-  const { error } = await client
+  const { data, error } = await client
     .from('vehicles')
     .update({ status })
     .eq('id', vehicleId)
     .eq('org_id', orgId)
+    .select('id')
+    .maybeSingle()
 
   if (error) {
     throw new DatabaseError(`Failed to update vehicle status: ${error.message}`, error)
   }
+  if (!data) throw new NotFoundError('Vehicle', vehicleId)
 
   if (actorId) {
     await createAuditLog({
@@ -280,9 +313,18 @@ export async function getDeliveries(orgId: string): Promise<Delivery[]> {
   return (data as DbDeliveryRow[]).map(dbToDelivery)
 }
 
-export async function saveDelivery(delivery: Delivery, orgId: string): Promise<Delivery> {
+export async function saveDelivery(delivery: Delivery, orgId: string, actorProfile: UserProfile): Promise<Delivery> {
   checkWriteAllowed()
   if (!orgId) throw new ValidationError('orgId is required.')
+  requireOperationalActor(orgId, actorProfile)
+  if (!delivery?.id || !delivery.locationId
+    || !Number.isInteger(delivery.size) || delivery.size <= 0
+    || !Number.isInteger(delivery.serviceMin) || delivery.serviceMin < 0
+    || !Number.isInteger(delivery.window?.start) || !Number.isInteger(delivery.window?.end)
+    || delivery.window.end <= delivery.window.start
+    || !['normal', 'urgent'].includes(delivery.priority)) {
+    throw new ValidationError('Delivery location, positive integer size, nonnegative service time, valid time window, and priority are required.')
+  }
   const client = getSupabaseClient()
 
   const row = deliveryToDb(delivery, orgId)
@@ -313,7 +355,7 @@ export async function listDeliveryPlans(
     .from('plans')
     .select('id, label, created_at_min, parent_plan_id')
     .eq('org_id', orgId)
-    .order('created_at_min', { ascending: false })
+    .order('created_at', { ascending: false })
 
   if (error) {
     throw new DatabaseError(`Failed to list delivery plans: ${error.message}`, error)
@@ -369,13 +411,17 @@ export async function getDeliveryPlan(planId: string, orgId: string): Promise<De
 export async function saveDeliveryPlan(
   plan: DeliveryPlan,
   orgId: string,
-  actorId: string,
+  actorProfile: UserProfile,
   parentPlanId?: string | null
 ): Promise<DeliveryPlan> {
   checkWriteAllowed()
-  if (!plan || !orgId || !actorId) {
-    throw new ValidationError('plan, orgId, and actorId are required.')
+  if (!plan || !orgId || !actorProfile?.id) {
+    throw new ValidationError('plan, orgId, and actor profile are required.')
   }
+  if (actorProfile.orgId !== orgId) {
+    throw new OrganizationMismatchError(`User organization '${actorProfile.orgId}' does not match target organization '${orgId}'.`)
+  }
+  requireRole(actorProfile, ['admin', 'dispatcher'])
 
   const client = getSupabaseClient()
   const { planRow, stopRows } = deliveryPlanToDb(plan, orgId, parentPlanId)
@@ -407,7 +453,7 @@ export async function saveDeliveryPlan(
   // 3. Write plan audit record
   await createAuditLog({
     orgId,
-    actorId,
+      actorId: actorProfile.id,
     action: parentPlanId ? 'plan_updated' : 'plan_created',
     entityType: 'plan',
     entityId: plan.id,

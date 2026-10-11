@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { Session } from '@supabase/supabase-js'
 import {
   LayoutDashboard,
   Truck,
@@ -38,6 +39,8 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [loadingProfile, setLoadingProfile] = useState(false)
   const [profileError, setProfileError] = useState('')
+  const [authReady, setAuthReady] = useState(isDemoMode)
+  const [authError, setAuthError] = useState('')
   const [demoRole, setDemoRole] = useState<Role>('dispatcher')
   const [page, setPage] = useState('dash')
   const [open, setOpen] = useState(false)
@@ -47,7 +50,11 @@ export default function App() {
 
   const handleSignOut = async () => {
     if (!isDemoMode && supabase) {
-      await supabase.auth.signOut().catch(() => {})
+      const { error } = await supabase.auth.signOut()
+      if (error) {
+        setProfileError(`Unable to sign out: ${error.message}`)
+        return
+      }
     }
     setAuthed(false)
     setProfile(null)
@@ -56,20 +63,27 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!supabase) {
+      setAuthReady(true)
+      return
+    }
+
     let mounted = true
+    let authEvents = 0
+    let profileRequest = 0
 
     const loadProfile = async () => {
-      if (isDemoMode) return
+      const requestId = ++profileRequest
       setLoadingProfile(true)
       setProfileError('')
       try {
         const p = await getCurrentUserProfile()
-        if (mounted) {
+        if (mounted && requestId === profileRequest) {
           setProfile(p)
           setLoadingProfile(false)
         }
       } catch (e) {
-        if (mounted) {
+        if (mounted && requestId === profileRequest) {
           setProfile(null)
           setProfileError((e as Error).message || 'Failed to load user profile.')
           setLoadingProfile(false)
@@ -77,39 +91,54 @@ export default function App() {
       }
     }
 
-    if (supabase) {
-      supabase.auth.getSession().then(({ data }) => {
-        if (!mounted) return
-        const hasSession = !!data.session
-        setAuthed(hasSession)
-        if (hasSession) {
-          loadProfile()
-        }
-      })
-
-      const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-        if (!mounted) return
-        const hasSession = !!session
-        setAuthed(hasSession)
-        if (hasSession) {
-          loadProfile()
-        } else {
-          setProfile(null)
-          setProfileError('')
-          setLoadingProfile(false)
-        }
-      })
-
-      return () => {
-        mounted = false
-        sub.subscription.unsubscribe()
+    const applySession = (session: Session | null) => {
+      const hasSession = !!session
+      setAuthed(hasSession)
+      setAuthReady(true)
+      setAuthError('')
+      if (hasSession) {
+        void loadProfile()
+      } else {
+        profileRequest++
+        setProfile(null)
+        setProfileError('')
+        setLoadingProfile(false)
       }
+    }
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return
+      authEvents++
+      applySession(session)
+    })
+
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted || authEvents > 0) return
+      if (error) {
+        setAuthError(error.message || 'Unable to restore the Supabase session.')
+        setAuthReady(true)
+        return
+      }
+      applySession(data.session)
+    }).catch((error: unknown) => {
+      if (!mounted || authEvents > 0) return
+      setAuthError((error as Error).message || 'Unable to restore the Supabase session.')
+      setAuthReady(true)
+    })
+
+    return () => {
+      mounted = false
+      sub.subscription.unsubscribe()
     }
   }, [])
 
   if (!authed) {
+    if (!authReady) {
+      return <div className="grid min-h-screen place-items-center bg-slate-50 p-4"><State kind="loading" text="Checking Supabase session..." /></div>
+    }
     return (
       <Login
+        authError={authError}
         onDemo={() => {
           setAuthed(true)
           setProfile(null)
@@ -212,7 +241,19 @@ export default function App() {
         <button className="mb-3 md:hidden" aria-label="Menu" onClick={() => setOpen(!open)}>
           <Menu />
         </button>
-        <Cur />
+        {!isDemoMode && !['dash', 'del', 'fleet', 'route', 'cmp'].includes(page) && (
+          <div className="mb-4 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            This page still shows sample data. It does not load or change your organization’s live records.
+          </div>
+        )}
+        {page === 'dis' ? <Disruptions profile={profile} demoRole={activeRole} />
+          : page === 'del' ? <Deliveries profile={profile} />
+          : page === 'fleet' ? <Fleet profile={profile} />
+              : page === 'route' ? <Routes profile={profile} />
+                : page === 'dash' ? <Dashboard profile={profile} />
+                  : page === 'cmp' ? <Compare profile={profile} />
+                    : page === 'usr' ? <Users profile={profile} />
+              : <Cur />}
       </main>
     </div>
   )
