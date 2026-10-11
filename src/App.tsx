@@ -303,7 +303,7 @@ export default function App() {
           {page === 'dis' ? <Disruptions profile={profile} demoRole={activeRole} />
             : page === 'del' ? <Deliveries profile={profile} />
             : page === 'fleet' ? <Fleet profile={profile} />
-            : page === 'route' ? <Routes profile={profile} />
+            : page === 'route' ? <Routes profile={profile} demoRole={activeRole} />
             : page === 'dash' ? <Dashboard profile={profile} />
             : page === 'cmp' ? <Compare profile={profile} />
             : page === 'usr' ? <Users profile={profile} />

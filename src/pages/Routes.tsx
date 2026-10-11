@@ -16,7 +16,13 @@ import { SpatialRouteCanvas } from '../components/SpatialRouteCanvas'
 import { allocate } from '../engine/allocate'
 import { travelMatrixFromPersistedPlan } from '../services/replanningService'
 
-export default function Routes({ profile = null }: { profile?: UserProfile | null }) {
+export default function Routes({
+  profile = null,
+  demoRole = 'dispatcher',
+}: {
+  profile?: UserProfile | null
+  demoRole?: UserProfile['role']
+}) {
   const [plansList, setPlansList] = useState<Array<{ id: string; label: string; createdAt: number }>>([])
   const [selectedPlanId, setSelectedPlanId] = useState<string>('')
   const [plan, setPlan] = useState<DeliveryPlan | null>(null)
@@ -78,8 +84,9 @@ export default function Routes({ profile = null }: { profile?: UserProfile | nul
     setPlan(null)
     setHasPlan(false)
     try {
-      const [organizationVehicles, organizationLocations, plans] = await Promise.all([
+      const [organizationVehicles, organizationDeliveries, organizationLocations, plans] = await Promise.all([
         getVehicles(profile.orgId),
+        getDeliveries(profile.orgId),
         getLocations(profile.orgId),
         listDeliveryPlans(profile.orgId),
       ])

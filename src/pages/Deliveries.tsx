@@ -281,9 +281,9 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
             : deliveries === null ? <State kind="error" text="Delivery data is unavailable." />
               : filteredDeliveries.length === 0 ? <State kind="empty" text={deliveries.length === 0 ? "No deliveries are registered for this organization yet." : "No deliveries match your active filter."} />
                 : <Table
-                  head={isDemoMode ? ['ID', 'Customer', 'Size', 'Window', 'Priority', 'Assignment', 'Action'] : ['ID', 'Customer', 'Size', 'Window', 'Priority', 'Action']}
+                  head={['ID', 'Customer', 'Size', 'Window', 'Priority', 'Assignment', 'Action']}
                   rows={filteredDeliveries.map(delivery => {
-                    const missing = demoUnassigned.get(delivery.id)
+                    const assignment = assignments.get(delivery.id)
                     const isSelected = selectedDeliveryId === delivery.id
                     const cells: ReactNode[] = [
                       <span key={`${delivery.id}-id`} className="font-mono text-xs font-medium">{delivery.id}</span>,
@@ -292,11 +292,11 @@ export default function Deliveries({ profile = null }: { profile?: UserProfile |
                       fmtWindow(delivery.window),
                       <Badge key={`${delivery.id}-priority`} t={delivery.priority === 'urgent' ? 'warn' : 'mute'}>{delivery.priority}</Badge>,
                     ]
-                    if (isDemoMode) {
-                      cells.push(missing
-                        ? <Badge key={`${delivery.id}-assignment`} t="bad">Unassigned: {missing.detail}</Badge>
-                        : <Badge key={`${delivery.id}-assignment`} t="ok">Assigned</Badge>)
-                    }
+                    cells.push(assignment
+                      ? assignment.startsWith('Unassigned:')
+                        ? <Badge key={`${delivery.id}-assignment`} t="bad">{assignment}</Badge>
+                        : <Badge key={`${delivery.id}-assignment`} t="ok">Assigned to {assignment}</Badge>
+                      : hasSavedPlan ? 'Not included in latest saved plan' : 'No saved plan')
                     cells.push(
                       <button
                         key={`${delivery.id}-inspect`}
