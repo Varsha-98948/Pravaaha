@@ -4,7 +4,7 @@ import { originalPlan, vehicles, deliveries, matrix, revisedPlan } from '../src/
 import { comparePlans } from '../src/engine/compare'
 import { replan } from '../src/engine/replan'
 import { computeStops, validateRoute } from '../src/engine/schedule'
-import type { Delivery, TravelMatrix, Vehicle } from '../src/types'
+import type { Delivery, RouteStop, TravelMatrix, Vehicle } from '../src/types'
 
 describe('time', () => { it('formats', () => { expect(fmtTime(0)).toBe('08:00'); expect(fmtTime(90)).toBe('09:30') }); it('validates', () => { expect(isValidWindow({ start: 10, end: 5 })).toBe(false) }) })
 describe('engine', () => {
@@ -69,6 +69,38 @@ describe('schedule', () => {
     const mat = mkMatrix({ depot: {} })
     const stops = computeStops('depot', 0, ['d1'], dMap(d), mat)
     const violations = validateRoute(van, stops, dMap(d))
+    expect(violations).toHaveLength(1)
+    expect(violations[0]).toMatch(/unreachable/)
+    expect(violations.some(v => v.includes('window'))).toBe(false)
+  })
+
+  it('pending stop arriving after its window: validateRoute detects time window violation', () => {
+    const d = mkDelivery('d1', 'c1', 5, 0, 30)                 // window closes at t=30
+    const stop: RouteStop = {
+      deliveryId: 'd1',
+      locationId: 'c1',
+      arrival: 50,                                             // arrives after window end
+      waitMin: 0,
+      serviceStart: 50,
+      departure: 60,
+      status: 'pending',                                       // incorrectly marked pending
+    }
+    const violations = validateRoute(van, [stop], dMap(d))
+    expect(violations.some(v => v.includes('misses time window'))).toBe(true)
+  })
+
+  it('pending stop with non-finite timing values: validateRoute detects unreachable violation', () => {
+    const d = mkDelivery('d1', 'c1', 5, 0, 120)
+    const stop: RouteStop = {
+      deliveryId: 'd1',
+      locationId: 'c1',
+      arrival: Infinity,                                       // non-finite timing values
+      waitMin: 0,
+      serviceStart: Infinity,
+      departure: Infinity,
+      status: 'pending',                                       // incorrectly marked pending
+    }
+    const violations = validateRoute(van, [stop], dMap(d))
     expect(violations).toHaveLength(1)
     expect(violations[0]).toMatch(/unreachable/)
     expect(violations.some(v => v.includes('window'))).toBe(false)

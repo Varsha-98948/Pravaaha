@@ -52,8 +52,21 @@ export function validateRoute(v: Vehicle, stops: RouteStop[], deliveries: Map<st
   }
   if (load > v.capacity) out.push(`${v.name}: load ${load} exceeds capacity ${v.capacity}`)
   for (const s of stops) {
-    if (s.status === 'skipped') { out.push(`${s.deliveryId}: unreachable`); continue }
-    if (s.status === 'late') out.push(`${s.deliveryId}: misses time window`)
+    const d = deliveries.get(s.deliveryId)
+    if (!d) continue
+    const unreachable = s.status === 'skipped' ||
+      !Number.isFinite(s.arrival) ||
+      !Number.isFinite(s.waitMin) ||
+      !Number.isFinite(s.serviceStart) ||
+      !Number.isFinite(s.departure)
+    if (unreachable) {
+      out.push(`${s.deliveryId}: unreachable`)
+      continue
+    }
+    const late = s.status === 'late' || s.arrival > d.window.end || s.serviceStart > d.window.end
+    if (late) {
+      out.push(`${s.deliveryId}: misses time window`)
+    }
   }
   const last = stops[stops.length - 1]
   if (last && Number.isFinite(last.departure) && last.departure > v.shiftEnd)
